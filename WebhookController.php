@@ -51,7 +51,7 @@ class WebhookController extends Controller
     public function zapier() {
         // set dummy param 
         $company_id = 90;
-        $leadspeek_api_id = '861487';
+        $leadspeek_api_id = '891680';
         $leadspeek_type = 'locator';
         // set dummy param 
         
@@ -67,28 +67,30 @@ class WebhookController extends Controller
             ->first();
         if ($chkZap) {
             if ($chkZap->api_key != '' && $chkZap->enable_sendgrid == 1) {
-                $webhook = ($campaign && $campaign->zap_webhook != '') ? $campaign->zap_webhook : $chkZap->api_key;
+                $webhook = ($campaign && $campaign->zap_webhook != '') ? explode('|',$campaign->zap_webhook) : explode('|',$chkZap->api_key);
                 $tags = ($campaign && !empty($campaign->zap_tags)) ? json_decode($campaign->zap_tags) : '';
                 if ($campaign && $campaign->zap_is_active == 1) {
-                    $send_to_zapier = $this->zap_sendrecord(
-                        $webhook,
-                        date('Y-m-d'),
-                        ucfirst(strtolower('agies')),
-                        ucfirst(strtolower('wahyudi')),
-                        'agieswahyudi@gmail.com',
-                        'agiesganteng2gmail.com',
-                        '081398257238',
-                        '021524352689',
-                        'plara',
-                        'plara2',
-                        'sukabumi',
-                        'jawa barat',
-                        '43356',
-                        'keyword',
-                        $tags,
-                        $leadspeek_api_id,
-                        $leadspeek_type
-                    );
+                    foreach ($webhook as $url) {
+                        $send_to_zapier = $this->zap_sendrecord(
+                            $url,
+                            date('Y-m-d'),
+                            ucfirst(strtolower('agies')),
+                            ucfirst(strtolower('wahyudi')),
+                            'agieswahyudi@gmail.com',
+                            'agiesganteng2gmail.com',
+                            '081398257238',
+                            '021524352689',
+                            'plara',
+                            'plara2',
+                            'sukabumi',
+                            'jawa barat',
+                            '43356',
+                            'keyword',
+                            $tags,
+                            $leadspeek_api_id,
+                            $leadspeek_type
+                        );
+                    }
                     return response()->json(['message' => 'lead sent successfully to zapier']);
                 }
             }
@@ -179,17 +181,39 @@ class WebhookController extends Controller
             ->where('leadspeek_users.active', 'T')
             ->where('leadspeek_users.disabled', 'F')
             ->where('leadspeek_users.active_user', 'T')
+            ->where('leadspeek_users.leadspeek_api_id','813938')
             ->get();
     
             if (!empty($campaigns)) {
                 foreach ($campaigns as $campaign) {
                     if ($campaign->lp_limit_leads > 0) {
+                        /** STATE LIST IF MORE THAN 10 AND LIMIT AND SHUFFLE */
+                        $stateList = trim($campaign->leadspeek_locator_state);
+                        $statesArray = explode(",", $stateList);
+                        if (count($statesArray) > 10) {
+                            // Shuffle the array to randomize the order
+                            shuffle($statesArray);
+
+                            // Get the first 10 elements
+                            $randomStates = array_slice($statesArray, 0, 10);
+
+                            // Convert back to a string if needed
+                            $randomStatesString = implode(",", $randomStates);
+                            $stateList = trim($randomStatesString);
+                        }
+                        /** STATE LIST IF MORE THAN 10 AND LIMIT AND SHUFFLE */
+
+                        /** LIMIT KEYWORD TO 500 CHAR AND SHUFFLE IT */
+                        $keywords = trim($campaign->leadspeek_locator_keyword);
+                        $keywordList = $this->getLimitedKeywords($keywords,500,true);
+                        /** LIMIT KEYWORD TO 500 CHAR AND SHUFFLE IT */
+
                         BigDBMCreateListJob::dispatch([
                             'company_id' => $campaign->company_id,
                             'leadspeek_api_id' => $campaign->leadspeek_api_id,
                             'lp_limit_leads' => $campaign->lp_limit_leads,
-                            'leadspeek_locator_keyword' => $campaign->leadspeek_locator_keyword,
-                            'leadspeek_locator_state' => $campaign->leadspeek_locator_state,
+                            'leadspeek_locator_keyword' => $keywordList,
+                            'leadspeek_locator_state' => $stateList,
                             'leadspeek_locator_city' => $campaign->leadspeek_locator_city,
                             'leadspeek_locator_zip' => $campaign->leadspeek_locator_zip,
                             'company_root_id' => $campaign->company_root_id,
@@ -273,8 +297,14 @@ class WebhookController extends Controller
                         return response()->json(array('result'=>'success','url'=>$apiURL));
                         exit;die();
                     }else{
-                        $getimg = file_get_contents($apiURL);
-                        return  Response($getimg,200)->header('Content-Type','image/gif');
+                        $getimg = @file_get_contents($apiURL);
+                        if ($getimg !== false) {
+                            return  Response($getimg,200)->header('Content-Type','image/gif');
+                        }else{
+                            $error = error_get_last();
+                            Log::info('Failed to get URL: ' . $apiURL . ' - Error: ' . $error['message']);
+                            return response()->json(array('result'=>'failed','msg'=>'failed to load URL ' . $apiURL));
+                        }
                     }
 
                     /** SEND EMAIL FOR NOTIFICATION HIT */
@@ -388,9 +418,16 @@ class WebhookController extends Controller
                                 // /** REPORT ANALYTIC */
                                 //     $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'serveclient');
                                 // /** REPORT ANALYTIC */
+                                $filterEmail = true;
 
-                                $matches = json_decode(json_encode($dataMatch), false);
-                                $this->processDataMatch($leadspeek_api_id,$matches,$data,$campaign[0]['paymentterm']);
+                                if($campaign[0]['require_email'] == 'T' && trim($dataMatch[0]['Email']) != '') {
+                                    $filterEmail = $this->filterEmailInLeadspeekReport($leadspeek_api_id, $dataMatch[0]['Email'], $dataMatch[0]['PersonID'], $clientCompanyID, $leadspeektype);
+                                }
+
+                                if($filterEmail) {
+                                    $matches = json_decode(json_encode($dataMatch), false);
+                                    $this->processDataMatch($leadspeek_api_id,$matches,$data,$campaign[0]['paymentterm']);
+                                }
                             }
                         }
                     }else{
@@ -478,7 +515,9 @@ class WebhookController extends Controller
 
         foreach($clientList as $cl) {
 
-            $clientEmail = explode(PHP_EOL, $cl['report_sent_to']);
+            //$clientEmail = explode(PHP_EOL, $cl['report_sent_to']);
+            $_clientEmail = str_replace(["\r\n", "\r"], "\n", trim($cl['report_sent_to']));
+            $clientEmail = explode("\n", $_clientEmail);
             $clientAdminNotify = explode(',',$cl['admin_notify_to']);
             $clientReportType = $cl['report_type'];
             $clientSpreadSheetID = $cl['spreadsheet_id'];
@@ -670,10 +709,10 @@ class WebhookController extends Controller
             $attachment = array();
 
             /** CHECK IF THERE END DATE ON WEEKLY OR MONTHLY PAYMENT TERM */
-            if ($cl['leadspeek_type'] == "local" && $clientLimitEndDate == '') {
+            if (($cl['leadspeek_type'] == "local" && $clientLimitEndDate == '') || $cl['leadspeek_type'] == "enhance") {
                 //$clientLimitEndDate = $cl['campaign_enddate'];
                 $oneYearLater = date('Y-m-d', strtotime('+1 year', strtotime(date('Y-m-d'))));
-                $clientLimitEndDate = ($cl['lp_enddate'] == null || $cl['lp_enddate'] == '0000-00-00 00:00:00' || $cl['lp_enddate'] == '')? $oneYearLater . ' 00:00:00':$cl['lp_enddate'];
+                $clientLimitEndDate = ($cl['lp_enddate'] == null || $cl['lp_enddate'] == '0000-00-00 00:00:00' || $cl['lp_enddate'] == '' || $cl['leadspeek_type'] == "enhance")? $oneYearLater . ' 00:00:00':$cl['lp_enddate'];
             }
 
             if ($clientPaymentTerm != 'One Time' && $clientPaymentTerm != 'Prepaid' && $clientLimitEndDate != '') {
@@ -960,6 +999,8 @@ class WebhookController extends Controller
                             $_Zipcode = '';
                         }
 
+                        $leadFrom = (isset($row->LeadFrom))?$row->LeadFrom:'';
+
                         $row->Keyword = $this->replaceExclamationWithAsterisk($row->Keyword);
                         //$content[] = array($row->ID,date('m/d/Y h:i:s A',strtotime($row->ClickDate)),ucfirst(strtolower($row->FirstName)),ucfirst(strtolower($row->LastName)),$row->Email,$row->Email2,$row->Phone,$row->Phone2,$row->Address1,$row->Address2,$row->City,$row->State,$row->Zipcode,$row->Keyword);
                         $content[] = array($row->ID,date('m/d/Y h:i:s A',strtotime($row->ClickDate)),ucfirst(strtolower($row->FirstName)),ucfirst(strtolower($row->LastName)),$row->Email,$row->Email2,$_Phone,$_Phone2,$_Address1,$_Address2,$_City,$_State,$_Zipcode,$row->Keyword);
@@ -975,9 +1016,9 @@ class WebhookController extends Controller
                                 $_topup_id = (isset($progressTopup->id))?$progressTopup->id:'0';
                             }
                             Log::info("insertDB topupID : " . $_topup_id . " campaignID:" . $_leadspeek_api_id);
-                            $newleads = $this->insertLeadspeekReport($_lp_user_id,$_company_id,$_user_id,$_leadspeek_api_id,$row->ID,$row->Email,$row->Email2,$row->OriginalMD5,$row->IP,$row->Source,date('Y-m-d H:i:s', strtotime($row->OptInDate)),date('Y-m-d H:i:s', strtotime($row->ClickDate)),$row->Referer,$row->Phone,$row->Phone2,ucfirst(strtolower($row->FirstName)),ucfirst(strtolower($row->LastName)),$row->Address1,$row->Address2,$row->City,$row->State,$row->Zipcode,$row->LeadFrom,'T',$price_lead,$platform_price_lead,$row->PersonID,$row->Keyword,$row->Description,$rootFeeCost,$_topup_id);
+                            $newleads = $this->insertLeadspeekReport($_lp_user_id,$_company_id,$_user_id,$_leadspeek_api_id,$row->ID,$row->Email,$row->Email2,$row->OriginalMD5,$row->IP,$row->Source,date('Y-m-d H:i:s', strtotime($row->OptInDate)),date('Y-m-d H:i:s', strtotime($row->ClickDate)),$row->Referer,$row->Phone,$row->Phone2,ucfirst(strtolower($row->FirstName)),ucfirst(strtolower($row->LastName)),$row->Address1,$row->Address2,$row->City,$row->State,$row->Zipcode,$leadFrom,'T',$price_lead,$platform_price_lead,$row->PersonID,$row->Keyword,$row->Description,$rootFeeCost,$_topup_id);
                         }else{
-                            $newleads = $this->insertLeadspeekReport($_lp_user_id,$_company_id,$_user_id,$_leadspeek_api_id,$row->ID,$row->Email,$row->Email2,$row->OriginalMD5,$row->IP,$row->Source,date('Y-m-d H:i:s', strtotime($row->OptInDate)),date('Y-m-d H:i:s', strtotime($row->ClickDate)),$row->Referer,$row->Phone,$row->Phone2,ucfirst(strtolower($row->FirstName)),ucfirst(strtolower($row->LastName)),$row->Address1,$row->Address2,$row->City,$row->State,$row->Zipcode,$row->LeadFrom,'T',$price_lead,$platform_price_lead,$row->PersonID,$row->Keyword,$row->Description,$rootFeeCost);
+                            $newleads = $this->insertLeadspeekReport($_lp_user_id,$_company_id,$_user_id,$_leadspeek_api_id,$row->ID,$row->Email,$row->Email2,$row->OriginalMD5,$row->IP,$row->Source,date('Y-m-d H:i:s', strtotime($row->OptInDate)),date('Y-m-d H:i:s', strtotime($row->ClickDate)),$row->Referer,$row->Phone,$row->Phone2,ucfirst(strtolower($row->FirstName)),ucfirst(strtolower($row->LastName)),$row->Address1,$row->Address2,$row->City,$row->State,$row->Zipcode,$leadFrom,'T',$price_lead,$platform_price_lead,$row->PersonID,$row->Keyword,$row->Description,$rootFeeCost);
                         }
                         $leadcount++;
 
@@ -1092,7 +1133,10 @@ class WebhookController extends Controller
                                             $_url = $row2->Keyword;
                                         }else if ($cl['leadspeek_type'] == "locator") {
                                             $_keyword = $row2->Keyword;
+                                        }else{
+                                            $_keyword = $row2->Keyword;
                                         }
+
                                         try {
                                             $this->sendContactToSendgrid($_sendgrid_api_key,$row2->Email, ucfirst(strtolower($row2->FirstName)),ucfirst(strtolower($row2->LastName)),$row2->Address1,$row2->Address2,$row2->City,$row2->State,$row2->Zipcode,$row2->Phone,$row2->Email2,$_keyword,$_url);
                                         }catch(Exception $e) {
@@ -1114,7 +1158,10 @@ class WebhookController extends Controller
                                                         $_url = $row2->Keyword;
                                                     }else if ($cl['leadspeek_type'] == "locator") {
                                                         $_keyword = $row2->Keyword;
+                                                    }else {
+                                                        $_keyword = $row2->Keyword;
                                                     }
+
                                                     try {
                                                             $this->sendContactToSendgridList($_sendgrid_api_key,$list,$row2->Email,ucfirst(strtolower($row2->FirstName)),ucfirst(strtolower($row2->LastName)),$row2->Address1,$row2->Address2,$row2->City,$row2->State,$row2->Zipcode,$row2->Phone,$row2->Email2,$_keyword,$_url);
                                                     }catch(Exception $e) {
@@ -1160,9 +1207,9 @@ class WebhookController extends Controller
                             /** CHECK IF TAG STILL EXIST ON GOHIGHLEVEL */
                             if ($chkTag != '' && $chkTag != 'sys_removed') {
                                 $tags[] = $partItem[1];
-                                $saveTags[] = $partItem[0] . '|' . $partItem[1];
+                                $saveTags[] = $partItem[0] . '|' . (isset($partItem[1]) ? $partItem[1] : "");
                             }else if ($chkTag == 'sys_removed') {
-                                $removeTags[] = $partItem[1];
+                                $removeTags[] = (isset($partItem[1]) ? $partItem[1] : "");
                             }
                         }
 
@@ -1256,6 +1303,8 @@ class WebhookController extends Controller
                             $_url = $row->Keyword;
                         } else if ($cl['leadspeek_type'] == "locator") {
                             $_keyword = $row->Keyword;
+                        }else {
+                            $_keyword = $row->Keyword;
                         }
                 
                         try {
@@ -1309,8 +1358,11 @@ class WebhookController extends Controller
                         $custom_side_menu = $this->getcompanysetting($cl['company_parent'], 'customsidebarleadmenu');
                         if (!empty($custom_side_menu)) {
                             $campaign_type = ($cl['leadspeek_type'] == 'local') ? $custom_side_menu->local->name : $custom_side_menu->locator->name ;
+                            if ($cl['leadspeek_type'] == 'enhance') {
+                                $campaign_type = (isset($custom_side_menu->enhance->name))?$custom_side_menu->enhance->name:'Enhance ID';
+                            }
                         }
-                        $webhook = ($campaign && $campaign->zap_webhook != '') ? $campaign->zap_webhook : $chkZap->api_key;
+                        $webhook = ($campaign && $campaign->zap_webhook != '') ? explode('|',$campaign->zap_webhook) : explode('|',$chkZap->api_key);
                         $tags = ($campaign && !empty($campaign->zap_tags)) ? json_decode($campaign->zap_tags) : '';
                         if ($campaign && $campaign->zap_is_active == 1) {
                             foreach ($matches as $row) {
@@ -1342,29 +1394,33 @@ class WebhookController extends Controller
                                     $url = $row->Keyword;
                                 } elseif ($cl['leadspeek_type'] === 'locator') {
                                     $keyword = $row->Keyword;
+                                }else{
+                                    $keyword = $row->Keyword;
                                 }
                                 
                                 try {
-                                    $send_to_zapier = $this->zap_sendrecord(
-                                        $webhook,
-                                        date('Y-m-d H:i:s', strtotime($row->ClickDate)),
-                                        ucfirst(strtolower($row->FirstName)),
-                                        ucfirst(strtolower($row->LastName)),
-                                        $_Email1,
-                                        $_Email2,
-                                        $_Phone,
-                                        $_Phone2,
-                                        $_Address1,
-                                        $_Address2,
-                                        $_City,
-                                        $_State,
-                                        $_Zipcode,
-                                        $keyword,
-                                        $url,
-                                        $tags,
-                                        $_leadspeek_api_id,
-                                        $campaign_type
-                                    );
+                                    foreach ($webhook as $url) {
+                                        $send_to_zapier = $this->zap_sendrecord(
+                                            $url,
+                                            date('Y-m-d H:i:s', strtotime($row->ClickDate)),
+                                            ucfirst(strtolower($row->FirstName)),
+                                            ucfirst(strtolower($row->LastName)),
+                                            $_Email1,
+                                            $_Email2,
+                                            $_Phone,
+                                            $_Phone2,
+                                            $_Address1,
+                                            $_Address2,
+                                            $_City,
+                                            $_State,
+                                            $_Zipcode,
+                                            $keyword,
+                                            $url,
+                                            $tags,
+                                            $_leadspeek_api_id,
+                                            $campaign_type
+                                        );
+                                    }
                                 } catch (\Throwable $th) {
                                     Log::error("Error creating new Zapier lead for match ID: " . $row->ID . " - " . $th->getMessage());
                                 }
@@ -1677,9 +1733,16 @@ class WebhookController extends Controller
                                 'topup_status' => 'queue',
                                 ];
                             /** TOP UP ARRAY */
-                            $totalFirstCharge = ($data['cost_perlead'] * $data['total_leads']) + $data['platformfee'];
+                            //$totalFirstCharge = ($data['cost_perlead'] * $data['total_leads']) + $data['platformfee'];
+                            $totalFirstCharge = ($data['cost_perlead'] * $data['total_leads']);
                             $_platformFee = ($data['platform_price'] * $data['total_leads']);
                             $_rootPrice = ($data['root_price'] * $data['total_leads']);
+
+                            // Log::info([
+                            //     '_platformFee' => $_platformFee,
+                            //     '_rootPrice' => $_rootPrice
+                            // ]);
+
                             $this->chargeClient($_usrInfo[0]['customer_payment_id'],$_usrInfo[0]['customer_card_id'],$_usrInfo[0]['email'],$totalFirstCharge,$cl['platformfee'],$_platformFee,$cl,$data,$_rootPrice,true,$paramTopup);
                         }   
                         /** CREATE PAYMENT HERE */
@@ -2081,6 +2144,31 @@ class WebhookController extends Controller
                             ],['stripe_account' => $accConID]);
 
                         }else{
+
+                            $statusPayment = 'paid';
+                            $errorstripe = '';
+                            $platformfee_charge = true;
+
+                            if($usrInfo['leadspeek_type'] == 'enhance') {
+                                $masterRootFee = $this->getcompanysetting($usrInfo['company_root_id'],'rootfee');
+
+                                if((isset($masterRootFee->feepercentagemob) && $masterRootFee->feepercentagemob != "") || (isset($masterRootFee->feepercentagedom) && $masterRootFee->feepercentagedom != "")) {
+                                    // if root mobile or dominator
+                                    // Log::info("platformfee = $platformfee ke-1");
+                                    $feePercentageEmm = (isset($masterRootFee->feepercentageemm))?$masterRootFee->feepercentageemm:0;
+                                    $platformfee = ($platformfee * $feePercentageEmm) / 100;
+                                    $platformfee = number_format($platformfee,2,'.','');
+                                    // Log::info("platformfee = $platformfee ke-2");
+
+                                    // Log::info([
+                                    //     'msg' => 'pembagian ke emm jika enhance 1',
+                                    //     'platformfee' => $platformfee,
+                                    //     'feePercentageEmm' => $feePercentageEmm,
+                                    //     'customer' => trim($custStripeID),
+                                    //     'stripe_account' => $accConID
+                                    // ]);
+                                }
+                            }
                         
                             $payment_intent =  $stripe->paymentIntents->create([
                                 'payment_method_types' => ['card'],
@@ -2094,44 +2182,50 @@ class WebhookController extends Controller
                                 'application_fee_amount' => ($platformfee * 100),
                             ],['stripe_account' => $accConID]);
 
+                            /* CHECK STATUS PAYMENT INTENTS */
+                            $payment_intent_status = (isset($payment_intent->status))?$payment_intent->status:"";
+                            if($payment_intent_status == 'requires_action') {
+                                $statusPayment = 'failed';
+                                $platformfee_charge = false;
+                            }
+                            /* CHECK STATUS PAYMENT INTENTS */
                         }
 
                         $paymentintentID = $payment_intent->id;
-                        $statusPayment = 'paid';
-                        $errorstripe = '';
-                        $platformfee_charge = true;
 
-                        if ($usrInfo['paymentterm'] == 'One Time') {
-                            $agencystripe = $this->check_agency_stripeinfo($usrInfo['company_parent'],$platformfee,$usrInfo['leadspeek_api_id'],'Agency ' . $defaultInvoice,date('Y-m-d 00:00:00'),date('Y-m-d 23:59:59'));
-                            $agencystriperesult = json_decode($agencystripe);
-                            
-                            if ($agencystriperesult->result == 'success') {
-                                $platform_paymentintentID = $agencystriperesult->payment_intentID;
-                                $sr_id = $agencystriperesult->srID;
-                                $ae_id = $agencystriperesult->aeID;
-                                $ar_id = $agencystriperesult->arID;
-                                $sales_fee = $agencystriperesult->salesfee;
-                                $platformfee = 0;
-                                $platform_errorstripe = '';
+                        if($statusPayment == 'paid' && $platformfee_charge) {
+                            if ($usrInfo['paymentterm'] == 'One Time') {
+                                $agencystripe = $this->check_agency_stripeinfo($usrInfo['company_parent'],$platformfee,$usrInfo['leadspeek_api_id'],'Agency ' . $defaultInvoice,date('Y-m-d 00:00:00'),date('Y-m-d 23:59:59'));
+                                $agencystriperesult = json_decode($agencystripe);
+                                
+                                if ($agencystriperesult->result == 'success') {
+                                    $platform_paymentintentID = $agencystriperesult->payment_intentID;
+                                    $sr_id = $agencystriperesult->srID;
+                                    $ae_id = $agencystriperesult->aeID;
+                                    $ar_id = $agencystriperesult->arID;
+                                    $sales_fee = $agencystriperesult->salesfee;
+                                    $platformfee = 0;
+                                    $platform_errorstripe = '';
+                                }else{
+                                    $platform_paymentintentID = $agencystriperesult->payment_intentID;
+                                    $platform_errorstripe .= $agencystriperesult->error;
+                                }
+    
                             }else{
-                                $platform_paymentintentID = $agencystriperesult->payment_intentID;
-                                $platform_errorstripe .= $agencystriperesult->error;
+                                /** TRANSFER SALES COMMISSION IF ANY */
+                                $_cleanProfit = "";
+                                if($rootFee != "0" && $rootFee != "") {
+                                    $_cleanProfit = $platformfee_ori - $rootFee;
+                                }
+                                $salesfee = $this->transfer_commission_sales($usrInfo['company_parent'],$platformfee,$usrInfo['leadspeek_api_id'],date('Y-m-d'),date('Y-m-d'),$stripeseckey,$_ongoingleads,$_cleanProfit);
+                                $salesfeeresult = json_decode($salesfee);
+                                $platform_paymentintentID = $salesfeeresult->payment_intentID;
+                                $sr_id = $salesfeeresult->srID;
+                                $ae_id = $salesfeeresult->aeID;
+                                $ar_id = $salesfeeresult->arID;
+                                $sales_fee = $salesfeeresult->salesfee;
+                                /** TRANSFER SALES COMMISSION IF ANY */
                             }
-
-                        }else{
-                            /** TRANSFER SALES COMMISSION IF ANY */
-                            $_cleanProfit = "";
-                            if($rootFee != "0" && $rootFee != "") {
-                                $_cleanProfit = $platformfee_ori - $rootFee;
-                            }
-                            $salesfee = $this->transfer_commission_sales($usrInfo['company_parent'],$platformfee,$usrInfo['leadspeek_api_id'],date('Y-m-d'),date('Y-m-d'),$stripeseckey,$_ongoingleads,$_cleanProfit);
-                            $salesfeeresult = json_decode($salesfee);
-                            $platform_paymentintentID = $salesfeeresult->payment_intentID;
-                            $sr_id = $salesfeeresult->srID;
-                            $ae_id = $salesfeeresult->aeID;
-                            $ar_id = $salesfeeresult->arID;
-                            $sales_fee = $salesfeeresult->salesfee;
-                            /** TRANSFER SALES COMMISSION IF ANY */
                         }
 
                     }catch (RateLimitException $e) {
@@ -2252,7 +2346,9 @@ class WebhookController extends Controller
                 $root_total_amount = (isset($usrInfo['root_price']))?$usrInfo['root_price']:'0';
                 $root_total_amount = $total_leads * $root_total_amount;
             }
-            $reportSentTo = explode(PHP_EOL, $usrInfo['report_sent_to']);
+            //$reportSentTo = explode(PHP_EOL, $usrInfo['report_sent_to']);
+            $_reportSentTo = str_replace(["\r\n", "\r"], "\n", trim($usrInfo['report_sent_to']));
+            $reportSentTo = explode("\n", $_reportSentTo);
             $todayDate = date('Y-m-d H:i:s');
             $clientMaxperTerm = $usrInfo['lp_max_lead_month'];
 
@@ -2260,7 +2356,7 @@ class WebhookController extends Controller
 
             /** CHECK IF ROOT FEE TRANSFER ENABLED */
             if ($rootFeeTransfer && $statusPayment == 'paid') {
-                $this->root_fee_commission($usrInfo,$stripeseckey,$usrInfo['company_name'],$usrInfo['leadspeek_api_id'],$rootFee,$platformfee_ori);
+                $this->root_fee_commission($usrInfo,$stripeseckey,$usrInfo['company_name'],$usrInfo['leadspeek_api_id'],$rootFee,$platformfee_ori,$platformfee);
             }
             /** CHECK IF ROOT FEE TRANSFER ENABLED */
 
@@ -2482,11 +2578,11 @@ class WebhookController extends Controller
         /** CHARGE WITH STRIPE */
     }
 
-    public function root_fee_commission($usrInfo,$stripeseckey,$companyName,$_leadspeek_api_id,$rootFee = 0, $platformfee_ori = 0) {
+    public function root_fee_commission($usrInfo,$stripeseckey,$companyName,$_leadspeek_api_id,$rootFee = 0, $platformfee_ori = 0, $platformfee = 0) {
         /** CHARGE ROOT FEE AGENCY */
         if($rootFee != "0" && $rootFee != "") {
             $rootCommissionFee = 0;
-            $rootCommissionFee = ($rootFee * 0.05);
+            $rootCommissionFee = ($usrInfo['leadspeek_type'] == 'enhance')?($platformfee * 0.05):($rootFee * 0.05);
             $rootCommissionFee = number_format($rootCommissionFee,2,'.','');
 
             $todayDate = date('Y-m-d H:i:s');
@@ -2495,6 +2591,7 @@ class WebhookController extends Controller
             //if ($cleanProfit > 0.5) {
                 /** GET ROOT CONNECTED ACCOUNT TO BE TRANSFER FOR CLEAN PROFIT AFTER CUT BY ROOT FEE COST */
                 $rootAccCon = "";
+                $rootAccConMob = "";
                 $rootCommissionSRAcc = "";
                 $rootCommissionAEAcc = "";
                 $rootCommissionSRAccVal = $rootCommissionFee;
@@ -2503,15 +2600,36 @@ class WebhookController extends Controller
                 $rootAccConResult = $this->getcompanysetting($usrInfo['company_root_id'],'rootfee');
                 if ($rootAccConResult != '') {
                     $rootAccCon = (isset($rootAccConResult->rootfeeaccid))?$rootAccConResult->rootfeeaccid:"";
+                    $rootAccConMob = (isset($rootAccConResult->rootfeeaccidmob))?$rootAccConResult->rootfeeaccidmob:""; 
                     $rootCommissionSRAcc = (isset($rootAccConResult->rootcomsr))?$rootAccConResult->rootcomsr:"";
                     $rootCommissionAEAcc = (isset($rootAccConResult->rootcomae))?$rootAccConResult->rootcomae:"";
                     /** OVERRIDE IF EXIST ANOTHER VALUE NOT 5% from Root FEE */
+                    if ($usrInfo['leadspeek_type'] == 'enhance') {
+                        if (isset($rootAccConResult->rootcomfee) && $rootAccConResult->rootcomfee != "") {
+                            $rootCommissionSRAcc = $rootAccConResult->rootcomfee;
+                            $rootAccConResult->rootcomsrval = $rootAccConResult->rootcomfeeval;
+                        }
+                        if (isset($rootAccConResult->rootcomfee1) && $rootAccConResult->rootcomfee1 != "") {
+                            $rootCommissionAEAcc = $rootAccConResult->rootcomfee1;
+                            $rootAccConResult->rootcomaeval = $rootAccConResult->rootcomfeeval1;
+                        }
+                    }
+                    
                     if (isset($rootAccConResult->rootcomsrval) && $rootAccConResult->rootcomsrval != "") {
-                        $rootCommissionSRAccVal = ($rootFee * (float) $rootAccConResult->rootcomsrval);
+                        $_rootFee = ($usrInfo['leadspeek_type'] == 'enhance')?$platformfee:$rootFee;
+                        $rootCommissionSRAccVal = ($_rootFee * (float) $rootAccConResult->rootcomsrval);
                         $rootCommissionSRAccVal = number_format($rootCommissionSRAccVal,2,'.','');
+
+                        // Log::info([
+                        //     'msg' => 'kirim rootCommissionSRAccVal',
+                        //     'rootFee' => $rootFee,
+                        //     '$rootAccConResult->rootcomsrval' => $rootAccConResult->rootcomsrval,
+                        //     'rootCommissionSRAccVal' => $rootCommissionSRAccVal,
+                        // ]);
                     }
                     if (isset($rootAccConResult->rootcomaeval) && $rootAccConResult->rootcomaeval != "") {
-                        $rootCommissionAEAccVal = ($rootFee * (float) $rootAccConResult->rootcomaeval);
+                        $_rootFee = ($usrInfo['leadspeek_type'] == 'enhance')?$platformfee:$rootFee;
+                        $rootCommissionAEAccVal = ($_rootFee * (float) $rootAccConResult->rootcomaeval);
                         $rootCommissionAEAccVal = number_format($rootCommissionAEAccVal,2,'.','');
                     }
                     /** OVERRIDE IF EXIST ANOTHER VALUE NOT 5% from Root FEE */
@@ -2527,12 +2645,90 @@ class WebhookController extends Controller
                     ]);
 
                     try {
-                        $transferRootProfit = $stripe->transfers->create([
-                            'amount' => ($cleanProfit * 100),
-                            'currency' => 'usd',
-                            'destination' => $rootAccCon,
-                            'description' => 'Profit Root App from Invoice ' . $companyName . ' #' . $_leadspeek_api_id . ' (' . date('m-d-Y',strtotime($todayDate)) . ')',
-                        ]);
+                        if($usrInfo['leadspeek_type'] == 'enhance') {
+                            //if(isset($rootAccConResult->feepercentagemob)) {
+                                // if root mobile
+                                if(isset($rootAccConResult->feepercentagemob) && $rootAccConResult->feepercentagemob != "") {
+                                    // calculation cleanProfit for mobile
+                                    $feePercentageMob = (isset($rootAccConResult->feepercentagemob))?$rootAccConResult->feepercentagemob:0;
+                                    $cleanProfitMob = ($platformfee_ori * $feePercentageMob) / 100;
+                                    $cleanProfitMob = number_format($cleanProfitMob,2,'.','');
+
+                                    // send cleanProfit to mobile
+                                    $transferRootProfit = $stripe->transfers->create([
+                                        'amount' => ($cleanProfitMob * 100),
+                                        'currency' => 'usd',
+                                        'destination' => $rootAccConMob,
+                                        'description' => 'Profit Root App from Invoice ' . $companyName . ' #' . $_leadspeek_api_id . ' (' . date('m-d-Y',strtotime($todayDate)) . ')',
+                                    ]);
+
+                                    // Log::info([
+                                    //     'msg' => 'pembagian ke mobile jika enhance 1.1',
+                                    //     'rootAccConMob' => $rootAccConMob,
+                                    //     'feePercentageMob' => $feePercentageMob,
+                                    //     'cleanProfitMob' => $cleanProfitMob,
+                                    // ]);
+                                }
+
+                                if(isset($rootAccConResult->feepercentagedom) && $rootAccConResult->feepercentagedom != "") {
+                                    // calculation cleanProfit for dominator
+                                    $feePercentageDom = (isset($rootAccConResult->feepercentagedom))?$rootAccConResult->feepercentagedom:0;
+                                    $cleanProfitDom = ($platformfee_ori * $feePercentageDom) / 100;
+                                    $cleanProfitDom = number_format($cleanProfitDom,2,'.','');
+
+                                    // send cleanProfit to dominator
+                                    $transferRootProfit = $stripe->transfers->create([
+                                        'amount' => ($cleanProfitDom * 100),
+                                        'currency' => 'usd',
+                                        'destination' => $rootAccCon,
+                                        'description' => 'Profit Root App from Invoice ' . $companyName . ' #' . $_leadspeek_api_id . ' (' . date('m-d-Y',strtotime($todayDate)) . ')',
+                                    ]);
+
+                                    // Log::info([
+                                    //     'msg' => 'pembagian ke dominator jika enhance 1.2',
+                                    //     'rootAccCon' => $rootAccCon,
+                                    //     'feePercentageDom' => $feePercentageDom,
+                                    //     'cleanProfitDom' => $cleanProfitDom,
+                                    // ]);
+                                }
+                            // }
+                            // else if(isset($rootAccConResult->feepercentagedom)) {
+                            //     // if root dominator
+
+                            //     // calculation cleanProfit for dominator
+                            //     $feePercentageDom = (isset($rootAccConResult->feepercentagedom))?$rootAccConResult->feepercentagedom:0;
+                            //     $cleanProfit = ($platformfee_ori * $feePercentageDom) / 100;
+                            //     $cleanProfit = number_format($cleanProfit,2,'.','');
+
+                            //     // Log::info("cleanProfit = $cleanProfit");
+                                
+                            //     // Log::info([
+                            //     //     'msg' => 'pembagian ke dominator jika enhance 2',
+                            //     //     'platformfee_ori' => $platformfee_ori,
+                            //     //     'feePercentageDom' => $feePercentageDom,
+                            //     //     'cleanProfit' => $cleanProfit,
+                            //     // ]);
+
+                            //     // send cleanProfit to dominator
+                            //     $transferRootProfit = $stripe->transfers->create([
+                            //         'amount' => ($cleanProfit * 100),
+                            //         'currency' => 'usd',
+                            //         'destination' => $rootAccCon,
+                            //         'description' => 'Profit Root App from Invoice ' . $companyName . ' #' . $_leadspeek_api_id . ' (' . date('m-d-Y',strtotime($todayDate)) . ')',
+                            //     ]);
+                            // }
+                        }else {
+                            $transferRootProfit = $stripe->transfers->create([
+                                'amount' => ($cleanProfit * 100),
+                                'currency' => 'usd',
+                                'destination' => $rootAccCon,
+                                'description' => 'Profit Root App from Invoice ' . $companyName . ' #' . $_leadspeek_api_id . ' (' . date('m-d-Y',strtotime($todayDate)) . ')',
+                            ]);
+                        }
+
+                        // Log::info([
+                        //     'rootAccCon' => $rootAccCon
+                        // ]);
 
                         // if (isset($transferSales->destination_payment)) {
                         //     $despay = $transferSales->destination_payment;
@@ -2562,7 +2758,7 @@ class WebhookController extends Controller
                             'amount' => ($rootCommissionSRAccVal * 100),
                             'currency' => 'usd',
                             'destination' => $rootCommissionSRAcc,
-                            'description' => 'Commision Root app from  Invoice ' . $companyName . ' #' . $_leadspeek_api_id . ' (' . date('m-d-Y',strtotime($todayDate)) . ' Ended Campaign)',
+                            'description' => 'Commision Root app from  Invoice ' . $companyName . ' #' . $_leadspeek_api_id . ' (' . date('m-d-Y',strtotime($todayDate)) . ')',
                         ]);
 
 
@@ -2585,7 +2781,7 @@ class WebhookController extends Controller
                             'amount' => ($rootCommissionAEAccVal * 100),
                             'currency' => 'usd',
                             'destination' => $rootCommissionAEAcc,
-                            'description' => 'Commision Root app from  Invoice ' . $companyName . ' #' . $_leadspeek_api_id . ' (' . date('m-d-Y',strtotime($todayDate)) . ' Ended Campaign)',
+                            'description' => 'Commision Root app from  Invoice ' . $companyName . ' #' . $_leadspeek_api_id . ' (' . date('m-d-Y',strtotime($todayDate)) . ')',
                         ]);
 
 
@@ -3575,561 +3771,707 @@ class WebhookController extends Controller
     private function getDataMatch($md5param,$leadspeek_api_id,$data,$keyword = '',$loctarget = 'Focus',$loczip = "",$locstate = "",$locstatesifi = "",$loccity = "",$loccitysifi = "",$nationaltargeting = "F",$leadspeektype="local",$compleadID = "",$clientCompanyID = "",$clientCompanyRootId = "") {
         date_default_timezone_set('America/Chicago');
 
-        $matches = array();
-        $salt = substr(hash('sha256', env('APP_KEY')), 0, 16);
-        $dataflow = "";
+        /* LOCK PROCESS GETDATAMATCH */
+        Log::info('START GETDATAMATCH LOCK');
+        $initLock = 'initGetDataMatch';
+        while(!$this->acquireLock($initLock)) {
+            Log::info("Initial Get Data Match Processing. Waiting to acquire lock.");
+            sleep(1); // Wait before trying again
+        }
+        /* LOCK PROCESS GETDATAMATCH */
 
-        /** RECORD ANY INCOMING MD5 PARAM THAT WE GET FROM TOWERDATA WEBHOOK FIRED */
-        $fr = FailedRecord::create([
-            'email_encrypt' => $md5param,
-            'leadspeek_api_id' => $leadspeek_api_id,
-            'description' => 'md5email fired|' . $keyword,
-        ]);
-        $failedRecordID = $fr->id;
-        /** RECORD ANY INCOMING MD5 PARAM THAT WE GET FROM TOWERDATA WEBHOOK FIRED */
+        try {
+            $reidentification = "";
+            $matches = array();
+            $salt = substr(hash('sha256', env('APP_KEY')), 0, 16);
+            $dataflow = "";
 
-        /** FILTER IF THERE IS KEYWORD TV AND PUT IT ON OPTOUT LIST */
-        $blockedkeyword = array("tv");
-        $word = strtolower(trim($keyword));
-
-        if (in_array($word,$blockedkeyword)) {
-            $createoptout = OptoutList::create([
-                'email' => '',
-                'emailmd5' => $md5param,
-                'blockedcategory' => 'keyword',
-                'description' => 'blocked because keyword : ' . $word,
+            /** RECORD ANY INCOMING MD5 PARAM THAT WE GET FROM TOWERDATA WEBHOOK FIRED */
+            $fr = FailedRecord::create([
+                'email_encrypt' => $md5param,
+                'leadspeek_api_id' => $leadspeek_api_id,
+                'description' => 'md5email fired|' . $keyword,
             ]);
-        }
-        /** FILTER IF THERE IS KEYWORD TV AND PUT IT ON OPTOUT LIST */
+            $failedRecordID = $fr->id;
+            /** RECORD ANY INCOMING MD5 PARAM THAT WE GET FROM TOWERDATA WEBHOOK FIRED */
 
-        /** FILTER IF SIMPLIFI GIVE NOT FIT KEYWORD */
-        if ($word != "") {
-            if (str_contains($word, '_audience')) {
-                $keyword = "";
+            /** FILTER IF THERE IS KEYWORD TV AND PUT IT ON OPTOUT LIST */
+            $blockedkeyword = array("tv");
+            $word = strtolower(trim($keyword));
+
+            if (in_array($word,$blockedkeyword)) {
+                $createoptout = OptoutList::create([
+                    'email' => '',
+                    'emailmd5' => $md5param,
+                    'blockedcategory' => 'keyword',
+                    'description' => 'blocked because keyword : ' . $word,
+                ]);
             }
-        }
-        /** FILTER IF SIMPLIFI GIVE NOT FIT KEYWORD */
+            /** FILTER IF THERE IS KEYWORD TV AND PUT IT ON OPTOUT LIST */
 
-        /** CHECK AGAINST EMM OPT OUT LIST */
-        $notAgainstOptout = true;
-
-        $optoutlist = OptoutList::select('emailmd5')
-                                ->where('emailmd5','=',$md5param)
-                                ->where('company_root_id','=',$clientCompanyRootId)
-                                ->get();
-        if (count($optoutlist) > 0) {
-            $notAgainstOptout = false;
-            /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                $frupdate = FailedRecord::find($failedRecordID);
-                $frupdate->description = $frupdate->description . '|AgainstEMMOptList';
-                $frupdate->save();
-            /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-            return array();
-            exit;die();
-        }
-        /** CHECK AGAINST EMM OPT OUT LIST */
-
-        /** CHECK AGAINST CAMPAIGN OR ACCOUNT SUPPRESSION LIST */
-        if ($notAgainstOptout) {
-            $notOnSuppressionList = true;
-
-            /** CHECK ACCOUNT / AGENCY LEVEL */
-            $suppressionlistAccount = SuppressionList::select('emailmd5')
-                                        ->where('emailmd5','=',$md5param)
-                                        ->where('company_id','=',$compleadID)
-                                        ->where('suppression_type','=','account')
-                                        ->get();
-            if (count($suppressionlistAccount) > 0) {
-                $notOnSuppressionList = false;
-                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                    $frupdate = FailedRecord::find($failedRecordID);
-                    $frupdate->description = $frupdate->description . '|AgainstAccountOptList';
-                    $frupdate->save();
-                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                return array();
-                exit;die();
-            }
-
-            /** CHECK CLIENT LEVEL */
-
-            $suppressionlistAccount = SuppressionList::select('emailmd5')
-                                        ->where('emailmd5','=',$md5param)
-                                        ->where('company_id','=',$clientCompanyID)
-                                        ->where('suppression_type','=','client')
-                                        ->get();
-            if (count($suppressionlistAccount) > 0) {
-                $notOnSuppressionList = false;
-                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                    $frupdate = FailedRecord::find($failedRecordID);
-                    $frupdate->description = $frupdate->description . '|AgainstClientOptList';
-                    $frupdate->save();
-                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                return array();
-                exit;die();
-            }
-
-            /** CHECK CAMPAIGN LEVEL */
-             $suppressionlistCampaign = SuppressionList::select('emailmd5')
-                                        ->where('emailmd5','=',$md5param)
-                                        ->where('leadspeek_api_id','=',$leadspeek_api_id)
-                                        ->where('suppression_type','=','campaign')
-                                        ->get();
-            if (count($suppressionlistCampaign) > 0) {
-                $notOnSuppressionList = false;
-                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                    $frupdate = FailedRecord::find($failedRecordID);
-                    $frupdate->description = $frupdate->description . '|AgainstCampaignOptList';
-                    $frupdate->save();
-                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                return array();
-                exit;die();
-            }
-
-        }
-        /** CHECK AGAINST CAMPAIGN OR ACCOUNT SUPPRESSION LIST */
-
-        /** CHECK REGARDING RE-IDENTIFICATION FOR LEADS */
-        if ($notOnSuppressionList) {
-            $reidentification = 'never';
-            $notOnReidentification = true;
-            $applyreidentificationall = false;
-
-            $chkreidentification = LeadspeekUser::select('reidentification_type','applyreidentificationall')
-                                        ->where('leadspeek_api_id','=',$leadspeek_api_id)
-                                        ->get();
-            if (count($chkreidentification) > 0) {
-                $reidentification = $chkreidentification[0]['reidentification_type'];
-                $applyreidentificationall = ($chkreidentification[0]['applyreidentificationall'] == 'T')?true:false;
-            }
-
-            /** CHECK IF DATA ALREADY IN THAT CAMPAIGN OR NOT */
-            $chkExistOnCampaign = array();
-
-            if ($applyreidentificationall) {
-                $chkExistOnCampaign = LeadspeekReport::select('leadspeek_reports.id','leadspeek_reports.clickdate','leadspeek_reports.created_at')
-                                        ->join('leadspeek_users','leadspeek_reports.lp_user_id','=','leadspeek_users.id')
-                                        ->where('leadspeek_users.applyreidentificationall','=','T')
-                                        ->where('leadspeek_users.archived','=','F')
-                                        ->where(function($query) use ($salt,$md5param){
-                                            $query->where(DB::raw("MD5(CONVERT(AES_DECRYPT(FROM_bASE64(`leadspeek_reports`.`email`), '" . $salt . "') USING utf8mb4))"),'=',$md5param)
-                                                    ->orWhere(DB::raw("MD5(CONVERT(AES_DECRYPT(FROM_bASE64(`leadspeek_reports`.`email2`), '" . $salt . "') USING utf8mb4))"),'=',$md5param)
-                                                    ->orWhere('leadspeek_reports.original_md5','=',$md5param);
-                                        })
-                                        ->orderBy(DB::raw("DATE_FORMAT(leadspeek_reports.clickdate,'%Y%m%d')"),'DESC')
-                                        ->limit(1)
-                                        ->get();
-            }else{
-                $chkExistOnCampaign = LeadspeekReport::select('id','clickdate','created_at')
-                                        ->where('leadspeek_api_id','=',$leadspeek_api_id)
-                                        ->where(function($query) use ($salt,$md5param){
-                                            $query->where(DB::raw("MD5(CONVERT(AES_DECRYPT(FROM_bASE64(`email`), '" . $salt . "') USING utf8mb4))"),'=',$md5param)
-                                                    ->orWhere(DB::raw("MD5(CONVERT(AES_DECRYPT(FROM_bASE64(`email2`), '" . $salt . "') USING utf8mb4))"),'=',$md5param)
-                                                    ->orWhere('original_md5','=',$md5param);
-                                        })
-                                        ->orderBy(DB::raw("DATE_FORMAT(clickdate,'%Y%m%d')"),'DESC')
-                                        ->limit(1)
-                                        ->get();
-            }
-
-            //if (count($chkExistOnCampaign) > 0 && $reidentification != 'never') {
-            if (count($chkExistOnCampaign) > 0) {
-                $clickDate = date('Ymd',strtotime($chkExistOnCampaign[0]['clickdate']));
-                $date1=date_create(date('Ymd'));
-                $date2=date_create($clickDate);
-                $diff=date_diff($date1,$date2);
-
-                if ($reidentification == 'never') {
-                    $notOnReidentification = false;
-                }else if ($diff->format("%a") <= 7 && $reidentification == '1 week') {
-                    $notOnReidentification = false;
-                }else if ($diff->format("%a") <= 30 && $reidentification == '1 month') {
-                    $notOnReidentification = false;
-                }else if ($diff->format("%a") <= 90 && $reidentification == '3 months') {
-                    $notOnReidentification = false;
-                }else if ($diff->format("%a") <= 120 && $reidentification == '6 months') {
-                    $notOnReidentification = false;
-                }else if ($diff->format("%a") <= 360 && $reidentification == '1 year') {
-                    $notOnReidentification = false;
+            /** FILTER IF SIMPLIFI GIVE NOT FIT KEYWORD */
+            if ($word != "") {
+                if (str_contains($word, '_audience')) {
+                    $keyword = "";
                 }
             }
-            /** CHECK IF DATA ALREADY IN THAT CAMPAIGN OR NOT */
+            /** FILTER IF SIMPLIFI GIVE NOT FIT KEYWORD */
 
-        }
-        /** CHECK REGARDING RE-IDENTIFICATION FOR LEADS */
+            /** CHECK AGAINST EMM OPT OUT LIST */
+            $notAgainstOptout = true;
 
-        /** CHECK ON DATABASE IF EXIST */
-        if ($notOnReidentification) {
+            $optoutlist = OptoutList::select('emailmd5')
+                                    ->where('emailmd5','=',$md5param)
+                                    ->where('company_root_id','=',$clientCompanyRootId)
+                                    ->get();
+            if (count($optoutlist) > 0) {
+                $notAgainstOptout = false;
+                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+                    $frupdate = FailedRecord::find($failedRecordID);
+                    $frupdate->description = $frupdate->description . '|AgainstEMMOptList';
+                    $frupdate->save();
+                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
 
-            $chkEmailExist = PersonEmail::select('person_emails.email','person_emails.id as emailID','person_emails.permission','p.lastEntry','p.uniqueID',DB::raw("CONVERT(AES_DECRYPT(FROM_bASE64(`firstName`), '" . $salt . "') USING utf8mb4) as firstName"),
-            DB::raw("CONVERT(AES_DECRYPT(FROM_bASE64(`lastName`), '" . $salt . "') USING utf8mb4) as lastName"),'p.id')
-                                ->join('persons as p','person_emails.person_id','=','p.id')
-                                ->where('person_emails.email_encrypt','=',$md5param)
-                                ->get();
+                /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                Log::info("RELEASE GETDATAMATCH LOCK");
+                $this->releaseLock($initLock);
+                /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
 
-            if (count($chkEmailExist) > 0) {
-                    $lastEntry = date('Ymd',strtotime($chkEmailExist[0]['lastEntry']));
-                    $date1=date_create(date('Ymd'));
-                    $date2=date_create($lastEntry);
-                    $diff=date_diff($date1,$date2);
+                /* WRITE UPSER FAILED LEAD RECORD */
+                $this->UpsertFailedLeadRecord([
+                    'function' => 'getDataMatch',
+                    'type' => 'blocked',
+                    'description' => 'blocked in table optoutlist',
+                    'leadspeek_api_id' => $leadspeek_api_id,
+                    'email_encrypt' => $md5param,
+                    'leadspeek_type' => $leadspeektype,
+                ]);
+                /* WRITE UPSER FAILED LEAD RECORD */
+                
+                return array();
+                exit;die();
+            }
+            /** CHECK AGAINST EMM OPT OUT LIST */
 
-                    $persondata['id'] = $chkEmailExist[0]['id'];
-                    $persondata['emailID'] = $chkEmailExist[0]['emailID'];
-                    $persondata['uniqueID'] = $chkEmailExist[0]['uniqueID'];
-                    $persondata['firstName'] = $chkEmailExist[0]['firstName'];
-                    $persondata['lastName'] = $chkEmailExist[0]['lastName'];
+            /** CHECK AGAINST CAMPAIGN OR ACCOUNT SUPPRESSION LIST */
+            if ($notAgainstOptout) {
+                $notOnSuppressionList = true;
 
-                    /** CHECK FOR LOCATION LOCK */
-                    $datalocation = PersonAddress::select('state','zip','city')->where('person_id','=',$persondata['id'])->get();
-                    if (count($datalocation) > 0) {
-                        $chkloc = $this->checklocationlock($loctarget,$datalocation[0]['zip'],$datalocation[0]['state'],$datalocation[0]['city'],$loczip,$locstate,$locstatesifi,$loccity,$loccitysifi,$nationaltargeting,$failedRecordID);
-                        if ($chkloc) {
-                            /** REPORT ANALYTIC */
-                                $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlockfailed');
-                            /** REPORT ANALYTIC */
-                            return array();
-                            exit;die();
-                        }else{
-                            /** REPORT ANALYTIC */
-                                $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlock');
-                            /** REPORT ANALYTIC */
-                        }
-                    }
-                    /** CHECK FOR LOCATION LOCK */
-
-                    $dataresult = array();
-                    $personEmail = $chkEmailExist[0]['email'];
-
-                    $dataflow = $dataflow . 'EmailExistonDB|';
-
-                if ($diff->format("%a") <= 120 && $chkEmailExist[0]['permission'] == "T") { /** customer exist, permission YES, last Entry < 6 Month **/
-                    // DATA EXIST ON DB
-                    $dataflow = $dataflow . 'LastEntryLessSixMonthPermissionYes|';
-                    $dataresult = $this->dataExistOnDB($personEmail,$persondata,$data,$keyword,$dataflow,$failedRecordID,$md5param);
-                }else if ($diff->format("%a") > 120 && $chkEmailExist[0]['permission'] == "T") {  /** customer exist, permission YES, last Entry > 6 Month **/
-                    // UPDATE OR QUERY TO ENDATO
-                    $dataflow = $dataflow . 'LastEntryMoreSixMonthPermissionYes|';
-                    $dataresult = $this->dataNotExistOnDBBIG($persondata['firstName'],$persondata['lastName'],$personEmail,"","","","","",$persondata['id'],$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
-                    //$dataresult = $this->dataNotExistOnDB($persondata['firstName'],$persondata['lastName'],$personEmail,"","","","","",$persondata['id'],$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
-                }else if ($diff->format("%a") > 120 && $chkEmailExist[0]['permission'] == "F") {  /** customer exist, permission NOT, last Entry > 6 Month **/
-                    // UPDATE OR QUERY TO ENDATO
-                    $dataflow = $dataflow . 'LastEntryMoreSixMonthPermissionNo|';
-                    $dataresult = $this->dataNotExistOnDBBIG($persondata['firstName'],$persondata['lastName'],$personEmail,"","","","","",$persondata['id'],$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
-                    //$dataresult = $this->dataNotExistOnDB($persondata['firstName'],$persondata['lastName'],$personEmail,"","","","","",$persondata['id'],$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
-                }
-
-                if (count($dataresult) > 0) {
-                    array_push($matches,$dataresult);
-                    return $matches;
-                }else{
+                /** CHECK ACCOUNT / AGENCY LEVEL */
+                $suppressionlistAccount = SuppressionList::select('emailmd5')
+                                            ->where('emailmd5','=',$md5param)
+                                            ->where('company_id','=',$compleadID)
+                                            ->where('suppression_type','=','account')
+                                            ->get();
+                if (count($suppressionlistAccount) > 0) {
+                    $notOnSuppressionList = false;
                     /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
                         $frupdate = FailedRecord::find($failedRecordID);
-                        $frupdate->description = $frupdate->description . '|NotAll4RequiredDataReturned';
+                        $frupdate->description = $frupdate->description . '|AgainstAccountOptList';
                         $frupdate->save();
                     /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
 
-                    /** RECORD AS FAILURE */
-                    /*$fr = FailedRecord::create([
-                        'email_encrypt' => $md5param,
+                    /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                    Log::info("RELEASE GETDATAMATCH LOCK");
+                    $this->releaseLock($initLock);
+                    /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+
+                    /* WRITE UPSER FAILED LEAD RECORD */
+                    $this->UpsertFailedLeadRecord([
+                        'function' => 'getDataMatch',
+                        'type' => 'blocked',
+                        'description' => 'blocked in table supression_lists where supression_type account',
                         'leadspeek_api_id' => $leadspeek_api_id,
-                        'description' => 'Not All 4 Required data returned',
-                    ]);*/
+                        'email_encrypt' => $md5param,
+                        'leadspeek_type' => $leadspeektype,
+                    ]);
+                    /* WRITE UPSER FAILED LEAD RECORD */
+
                     return array();
-                    /** RECORD AS FAILURE */
+                    exit;die();
                 }
 
-            }else{ //IF NOT EXIST ON DB
+                /** CHECK CLIENT LEVEL */
 
-                /** QUERY BIG BDM TO GET RESULT */
-                    $dataresult = $this->process_BDM_TowerDATA($loctarget,$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$loczip,$locstate,$locstatesifi,$loccity,$loccitysifi,$nationaltargeting,$leadspeektype);
+                $suppressionlistAccount = SuppressionList::select('emailmd5')
+                                            ->where('emailmd5','=',$md5param)
+                                            ->where('company_id','=',$clientCompanyID)
+                                            ->where('suppression_type','=','client')
+                                            ->get();
+                if (count($suppressionlistAccount) > 0) {
+                    $notOnSuppressionList = false;
+                    /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+                        $frupdate = FailedRecord::find($failedRecordID);
+                        $frupdate->description = $frupdate->description . '|AgainstClientOptList';
+                        $frupdate->save();
+                    /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+
+                    /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                    Log::info("RELEASE GETDATAMATCH LOCK");
+                    $this->releaseLock($initLock);
+                    /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                    
+                    /* WRITE UPSER FAILED LEAD RECORD */
+                    $this->UpsertFailedLeadRecord([
+                        'function' => 'getDataMatch',
+                        'type' => 'blocked',
+                        'description' => 'blocked in table supression_lists where supression_type client',
+                        'leadspeek_api_id' => $leadspeek_api_id,
+                        'email_encrypt' => $md5param,
+                        'leadspeek_type' => $leadspeektype,
+                    ]);
+                    /* WRITE UPSER FAILED LEAD RECORD */
+
+                    return array();
+                    exit;die();
+                }
+
+                /** CHECK CAMPAIGN LEVEL */
+                $suppressionlistCampaign = SuppressionList::select('emailmd5')
+                                            ->where('emailmd5','=',$md5param)
+                                            ->where('leadspeek_api_id','=',$leadspeek_api_id)
+                                            ->where('suppression_type','=','campaign')
+                                            ->get();
+                if (count($suppressionlistCampaign) > 0) {
+                    $notOnSuppressionList = false;
+                    /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+                        $frupdate = FailedRecord::find($failedRecordID);
+                        $frupdate->description = $frupdate->description . '|AgainstCampaignOptList';
+                        $frupdate->save();
+                    /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+                    
+                    /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                    Log::info("RELEASE GETDATAMATCH LOCK");
+                    $this->releaseLock($initLock);
+                    /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+
+                    /* WRITE UPSER FAILED LEAD RECORD */
+                    $this->UpsertFailedLeadRecord([
+                        'function' => 'getDataMatch',
+                        'type' => 'blocked',
+                        'description' => 'blocked in table supression_lists where supression_type campaign',
+                        'leadspeek_api_id' => $leadspeek_api_id,
+                        'email_encrypt' => $md5param,
+                        'leadspeek_type' => $leadspeektype,
+                    ]);
+                    /* WRITE UPSER FAILED LEAD RECORD */
+
+                    return array();
+                    exit;die();
+                }
+
+            }
+            /** CHECK AGAINST CAMPAIGN OR ACCOUNT SUPPRESSION LIST */
+
+            /** CHECK REGARDING RE-IDENTIFICATION FOR LEADS */
+            if ($notOnSuppressionList) {
+                $reidentification = 'never';
+                $notOnReidentification = true;
+                $applyreidentificationall = false;
+
+                $chkreidentification = LeadspeekUser::select('reidentification_type','applyreidentificationall')
+                                            ->where('leadspeek_api_id','=',$leadspeek_api_id)
+                                            ->get();
+                if (count($chkreidentification) > 0) {
+                    $reidentification = $chkreidentification[0]['reidentification_type'];
+                    $applyreidentificationall = ($chkreidentification[0]['applyreidentificationall'] == 'T')?true:false;
+                }
+
+                /** CHECK IF DATA ALREADY IN THAT CAMPAIGN OR NOT */
+                $chkExistOnCampaign = array();
+
+                if ($applyreidentificationall) {
+                    $chkExistOnCampaign = LeadspeekReport::select('leadspeek_reports.id','leadspeek_reports.clickdate','leadspeek_reports.created_at')
+                                            ->join('leadspeek_users','leadspeek_reports.lp_user_id','=','leadspeek_users.id')
+                                            ->where('leadspeek_reports.company_id','=',$clientCompanyID)
+                                            ->where('leadspeek_users.applyreidentificationall','=','T')
+                                            ->where('leadspeek_users.archived','=','F')
+                                            ->where(function($query) use ($salt,$md5param){
+                                                $query->where(DB::raw("MD5(CONVERT(AES_DECRYPT(FROM_bASE64(`leadspeek_reports`.`email`), '" . $salt . "') USING utf8mb4))"),'=',$md5param)
+                                                        ->orWhere(DB::raw("MD5(CONVERT(AES_DECRYPT(FROM_bASE64(`leadspeek_reports`.`email2`), '" . $salt . "') USING utf8mb4))"),'=',$md5param)
+                                                        ->orWhere('leadspeek_reports.original_md5','=',$md5param);
+                                            })
+                                            ->orderBy(DB::raw("DATE_FORMAT(leadspeek_reports.clickdate,'%Y%m%d')"),'DESC')
+                                            ->limit(1)
+                                            ->get();
+                }else{
+                    $chkExistOnCampaign = LeadspeekReport::select('id','clickdate','created_at')
+                                            ->where('leadspeek_api_id','=',$leadspeek_api_id)
+                                            ->where(function($query) use ($salt,$md5param){
+                                                $query->where(DB::raw("MD5(CONVERT(AES_DECRYPT(FROM_bASE64(`email`), '" . $salt . "') USING utf8mb4))"),'=',$md5param)
+                                                        ->orWhere(DB::raw("MD5(CONVERT(AES_DECRYPT(FROM_bASE64(`email2`), '" . $salt . "') USING utf8mb4))"),'=',$md5param)
+                                                        ->orWhere('original_md5','=',$md5param);
+                                            })
+                                            ->orderBy(DB::raw("DATE_FORMAT(clickdate,'%Y%m%d')"),'DESC')
+                                            ->limit(1)
+                                            ->get();
+                }
+
+                //if (count($chkExistOnCampaign) > 0 && $reidentification != 'never') {
+                if (count($chkExistOnCampaign) > 0) {
+                    $clickDate = date('Ymd',strtotime($chkExistOnCampaign[0]['clickdate']));
+                    $date1=date_create(date('Ymd'));
+                    $date2=date_create($clickDate);
+                    $diff=date_diff($date1,$date2);
+
+                    if ($reidentification == 'never') {
+                        $notOnReidentification = false;
+                    }else if ($diff->format("%a") <= 7 && $reidentification == '1 week') {
+                        $notOnReidentification = false;
+                    }else if ($diff->format("%a") <= 30 && $reidentification == '1 month') {
+                        $notOnReidentification = false;
+                    }else if ($diff->format("%a") <= 90 && $reidentification == '3 months') {
+                        $notOnReidentification = false;
+                    }else if ($diff->format("%a") <= 120 && $reidentification == '6 months') {
+                        $notOnReidentification = false;
+                    }else if ($diff->format("%a") <= 360 && $reidentification == '1 year') {
+                        $notOnReidentification = false;
+                    }
+                }
+                /** CHECK IF DATA ALREADY IN THAT CAMPAIGN OR NOT */
+
+            }
+            /** CHECK REGARDING RE-IDENTIFICATION FOR LEADS */
+
+            /** CHECK ON DATABASE IF EXIST */
+            if ($notOnReidentification) {
+                $chkEmailExist = PersonEmail::select('person_emails.email','person_emails.id as emailID','person_emails.permission','p.lastEntry','p.uniqueID',DB::raw("CONVERT(AES_DECRYPT(FROM_bASE64(`firstName`), '" . $salt . "') USING utf8mb4) as firstName"),
+                DB::raw("CONVERT(AES_DECRYPT(FROM_bASE64(`lastName`), '" . $salt . "') USING utf8mb4) as lastName"),'p.id')
+                                    ->join('persons as p','person_emails.person_id','=','p.id')
+                                    ->where('person_emails.email_encrypt','=',$md5param)
+                                    ->get();
+
+                if (count($chkEmailExist) > 0) {
+                        $lastEntry = date('Ymd',strtotime($chkEmailExist[0]['lastEntry']));
+                        $date1=date_create(date('Ymd'));
+                        $date2=date_create($lastEntry);
+                        $diff=date_diff($date1,$date2);
+
+                        $persondata['id'] = $chkEmailExist[0]['id'];
+                        $persondata['emailID'] = $chkEmailExist[0]['emailID'];
+                        $persondata['uniqueID'] = $chkEmailExist[0]['uniqueID'];
+                        $persondata['firstName'] = $chkEmailExist[0]['firstName'];
+                        $persondata['lastName'] = $chkEmailExist[0]['lastName'];
+
+                        /** CHECK FOR LOCATION LOCK */
+                        $datalocation = PersonAddress::select('state','zip','city')->where('person_id','=',$persondata['id'])->get();
+                        if (count($datalocation) > 0) {
+                            $chkloc = $this->checklocationlock($loctarget,$datalocation[0]['zip'],$datalocation[0]['state'],$datalocation[0]['city'],$loczip,$locstate,$locstatesifi,$loccity,$loccitysifi,$nationaltargeting,$failedRecordID);
+                            if ($chkloc) {
+                                /** REPORT ANALYTIC */
+                                    $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlockfailed');
+                                /** REPORT ANALYTIC */
+
+                                /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                                Log::info("RELEASE GETDATAMATCH LOCK");
+                                $this->releaseLock($initLock);
+                                /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+
+                                /* WRITE UPSER FAILED LEAD RECORD */
+                                $this->UpsertFailedLeadRecord([
+                                    'function' => 'getDataMatch',
+                                    'type' => 'blocked',
+                                    'description' => "blocked in checklocationlock zip = $loczip, state = $locstate, city = $loccity function getDataMatch",
+                                    'leadspeek_api_id' => $leadspeek_api_id,
+                                    'email_encrypt' => $md5param,
+                                    'leadspeek_type' => $leadspeektype,
+                                ]);
+                                /* WRITE UPSER FAILED LEAD RECORD */
+
+                                return array();
+                                exit;die();
+                            }else{
+                                /** REPORT ANALYTIC */
+                                    $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlock');
+                                /** REPORT ANALYTIC */
+                            }
+                        }
+                        /** CHECK FOR LOCATION LOCK */
+
+                        $dataresult = array();
+                        $personEmail = $chkEmailExist[0]['email'];
+
+                        $dataflow = $dataflow . 'EmailExistonDB|';
+
+                    if ($diff->format("%a") <= 120 && $chkEmailExist[0]['permission'] == "T") { /** customer exist, permission YES, last Entry < 6 Month **/
+                        // DATA EXIST ON DB
+                        $dataflow = $dataflow . 'LastEntryLessSixMonthPermissionYes|';
+                        $dataresult = $this->dataExistOnDB($personEmail,$persondata,$data,$keyword,$dataflow,$failedRecordID,$md5param);
+                    }else if ($diff->format("%a") > 120 && $chkEmailExist[0]['permission'] == "T") {  /** customer exist, permission YES, last Entry > 6 Month **/
+                        // UPDATE OR QUERY TO ENDATO
+                        $dataflow = $dataflow . 'LastEntryMoreSixMonthPermissionYes|';
+                        $dataresult = $this->dataNotExistOnDBBIG($persondata['firstName'],$persondata['lastName'],$personEmail,"","","","","",$persondata['id'],$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
+                        //$dataresult = $this->dataNotExistOnDB($persondata['firstName'],$persondata['lastName'],$personEmail,"","","","","",$persondata['id'],$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
+                    }else if ($diff->format("%a") > 120 && $chkEmailExist[0]['permission'] == "F") {  /** customer exist, permission NOT, last Entry > 6 Month **/
+                        // UPDATE OR QUERY TO ENDATO
+                        $dataflow = $dataflow . 'LastEntryMoreSixMonthPermissionNo|';
+                        $dataresult = $this->dataNotExistOnDBBIG($persondata['firstName'],$persondata['lastName'],$personEmail,"","","","","",$persondata['id'],$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
+                        //$dataresult = $this->dataNotExistOnDB($persondata['firstName'],$persondata['lastName'],$personEmail,"","","","","",$persondata['id'],$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
+                    }
+
                     if (count($dataresult) > 0) {
                         array_push($matches,$dataresult);
+                        
+                        /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                        Log::info("RELEASE GETDATAMATCH LOCK");
+                        $this->releaseLock($initLock);
+                        /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+
                         return $matches;
                     }else{
+                        /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+                            $frupdate = FailedRecord::find($failedRecordID);
+                            $frupdate->description = $frupdate->description . '|NotAll4RequiredDataReturned';
+                            $frupdate->save();
+                        /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+
+                        /** RECORD AS FAILURE */
+                        /*$fr = FailedRecord::create([
+                            'email_encrypt' => $md5param,
+                            'leadspeek_api_id' => $leadspeek_api_id,
+                            'description' => 'Not All 4 Required data returned',
+                        ]);*/
+                        
+                        /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                        Log::info("RELEASE GETDATAMATCH LOCK");
+                        $this->releaseLock($initLock);
+                        /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                        
                         return array();
-                        exit;die();
+                        /** RECORD AS FAILURE */
                     }
-                /** QUERY BIG BDM TO GET RESULT */
 
-                /** QUERYING TO TOWER DATA WITH DATA POSTAL TO GET SOME OTHER INFORMATION WITH MD5 EMAIL */
-                    // $tower = $this->getTowerData("postal",$md5param);
+                }else{ //IF NOT EXIST ON DB
 
-                    // if (isset($tower->postal_address)) {
-                    //     $_fname = $tower->postal_address->first_name;
-                    //     $_lname = $tower->postal_address->last_name;
-                    //     $_email = "";
-                    //     $_phone = "";
-                    //     $_address = $tower->postal_address->address;
-                    //     $_city = $tower->postal_address->city;
-                    //     $_state = $tower->postal_address->state;
-                    //     $_zip = $tower->postal_address->zip;
+                    /** QUERY BIG BDM TO GET RESULT */
+                        $dataresult = $this->process_BDM_TowerDATA($loctarget,$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$loczip,$locstate,$locstatesifi,$loccity,$loccitysifi,$nationaltargeting,$leadspeektype);
+                        if (count($dataresult) > 0) {
+                            array_push($matches,$dataresult);
+                            
+                            /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                            Log::info("RELEASE GETDATAMATCH LOCK");
+                            $this->releaseLock($initLock);
+                            /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
 
-                    //     /** REPORT ANALYTIC */
-                    //         $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'towerpostal');
-                    //     /** REPORT ANALYTIC */
+                            return $matches;
+                        }else{
+                            /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                            Log::info("RELEASE GETDATAMATCH LOCK");
+                            $this->releaseLock($initLock);
+                            /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                            
+                            return array();
+                            exit;die();
+                        }
+                    /** QUERY BIG BDM TO GET RESULT */
 
-                    //     $dataresult = $this->dataNotExistOnDB($_fname,$_lname,$_email,$_phone,$_address,$_city,$_state,$_zip,"",$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
+                    /** QUERYING TO TOWER DATA WITH DATA POSTAL TO GET SOME OTHER INFORMATION WITH MD5 EMAIL */
+                        // $tower = $this->getTowerData("postal",$md5param);
 
-                    //     if (count($dataresult) > 0) {
+                        // if (isset($tower->postal_address)) {
+                        //     $_fname = $tower->postal_address->first_name;
+                        //     $_lname = $tower->postal_address->last_name;
+                        //     $_email = "";
+                        //     $_phone = "";
+                        //     $_address = $tower->postal_address->address;
+                        //     $_city = $tower->postal_address->city;
+                        //     $_state = $tower->postal_address->state;
+                        //     $_zip = $tower->postal_address->zip;
 
-                    //         /** REPORT ANALYTIC */
-                    //             $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'endatoenrichment');
-                    //         /** REPORT ANALYTIC */
+                        //     /** REPORT ANALYTIC */
+                        //         $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'towerpostal');
+                        //     /** REPORT ANALYTIC */
 
-                    //         /** CHECK FOR LOCATION LOCK */
-                    //             $chkloc = $this->checklocationlock($loctarget,$dataresult['Zipcode'],$dataresult['State'],$dataresult['City'],$loczip,$locstate,$loccity,$nationaltargeting,$failedRecordID);
-                    //             if ($chkloc) {
-                    //                 /** REPORT ANALYTIC */
-                    //                     $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlockfailed');
-                    //                 /** REPORT ANALYTIC */
-                    //                 return array();
-                    //                 exit;die();
-                    //             }else{
-                    //                 /** REPORT ANALYTIC */
-                    //                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlock');
-                    //                 /** REPORT ANALYTIC */
-                    //             }
-                    //         /** CHECK FOR LOCATION LOCK */
+                        //     $dataresult = $this->dataNotExistOnDB($_fname,$_lname,$_email,$_phone,$_address,$_city,$_state,$_zip,"",$keyword,$dataflow,$failedRecordID,$md5param,$leadspeek_api_id,$leadspeektype);
 
-                    //         if (trim($dataresult['Email']) != "") {
-                    //             array_push($matches,$dataresult);
-                    //             return $matches;
-                    //         }else{
-                    //             $tower = $this->getTowerData("md5",$md5param);
-                    //             if (isset($tower->target_email)) {
-                    //                 if ($tower->target_email != "") {
-                    //                     $tmpEmail = strtolower(trim($tower->target_email));
-                    //                     $tmpMd5 = md5($tmpEmail);
-                    //                     $dataresult['Email'] = $tmpEmail;
+                        //     if (count($dataresult) > 0) {
 
-                    //                     /** REPORT ANALYTIC */
-                    //                         $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'toweremail');
-                    //                     /** REPORT ANALYTIC */
+                        //         /** REPORT ANALYTIC */
+                        //             $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'endatoenrichment');
+                        //         /** REPORT ANALYTIC */
 
-                    //                     if(trim($tmpEmail) != "") {
-                    //                         $zbcheck = $this->zb_validation($tmpEmail,"");
-                    //                         if (isset($zbcheck->status)) {
-                    //                             if($zbcheck->status == "invalid" || $zbcheck->status == "catch-all" || $zbcheck->status == "abuse" || $zbcheck->status == "do_not_mail" || $zbcheck->status == "spamtrap") {
-                    //                                 /** PUT IT ON OPTOUT LIST */
-                    //                                 $createoptout = OptoutList::create([
-                    //                                     'email' => $tmpEmail,
-                    //                                     'emailmd5' => md5($tmpEmail),
-                    //                                     'blockedcategory' => 'zbnotvalid',
-                    //                                     'description' => 'Zero Bounce Status. : ' . $zbcheck->status . '|Email1fromTD',
-                    //                                 ]);
-                    //                                 /** PUT IT ON OPTOUT LIST */
-                    //                                 $dataresult['Email'] = "";
+                        //         /** CHECK FOR LOCATION LOCK */
+                        //             $chkloc = $this->checklocationlock($loctarget,$dataresult['Zipcode'],$dataresult['State'],$dataresult['City'],$loczip,$locstate,$loccity,$nationaltargeting,$failedRecordID);
+                        //             if ($chkloc) {
+                        //                 /** REPORT ANALYTIC */
+                        //                     $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlockfailed');
+                        //                 /** REPORT ANALYTIC */
+                        //                 return array();
+                        //                 exit;die();
+                        //             }else{
+                        //                 /** REPORT ANALYTIC */
+                        //                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlock');
+                        //                 /** REPORT ANALYTIC */
+                        //             }
+                        //         /** CHECK FOR LOCATION LOCK */
 
-                    //                                 /** REPORT ANALYTIC */
-                    //                                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'zerobouncefailed');
-                    //                                 /** REPORT ANALYTIC */
-                    //                             }else{
-                    //                                 $newpersonemail = PersonEmail::create([
-                    //                                     'person_id' => $dataresult['PersonID'],
-                    //                                     'email' => $tmpEmail,
-                    //                                     'email_encrypt' => $tmpMd5,
-                    //                                     'permission' => 'T',
-                    //                                     'zbvalidate' => date('Y-m-d H:i:s'),
-                    //                                 ]);
+                        //         if (trim($dataresult['Email']) != "") {
+                        //             array_push($matches,$dataresult);
+                        //             return $matches;
+                        //         }else{
+                        //             $tower = $this->getTowerData("md5",$md5param);
+                        //             if (isset($tower->target_email)) {
+                        //                 if ($tower->target_email != "") {
+                        //                     $tmpEmail = strtolower(trim($tower->target_email));
+                        //                     $tmpMd5 = md5($tmpEmail);
+                        //                     $dataresult['Email'] = $tmpEmail;
 
-                    //                                 /** REPORT ANALYTIC */
-                    //                                     $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'zerobounce');
-                    //                                 /** REPORT ANALYTIC */
+                        //                     /** REPORT ANALYTIC */
+                        //                         $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'toweremail');
+                        //                     /** REPORT ANALYTIC */
 
-                    //                             }
+                        //                     if(trim($tmpEmail) != "") {
+                        //                         $zbcheck = $this->zb_validation($tmpEmail,"");
+                        //                         if (isset($zbcheck->status)) {
+                        //                             if($zbcheck->status == "invalid" || $zbcheck->status == "catch-all" || $zbcheck->status == "abuse" || $zbcheck->status == "do_not_mail" || $zbcheck->status == "spamtrap") {
+                        //                                 /** PUT IT ON OPTOUT LIST */
+                        //                                 $createoptout = OptoutList::create([
+                        //                                     'email' => $tmpEmail,
+                        //                                     'emailmd5' => md5($tmpEmail),
+                        //                                     'blockedcategory' => 'zbnotvalid',
+                        //                                     'description' => 'Zero Bounce Status. : ' . $zbcheck->status . '|Email1fromTD',
+                        //                                 ]);
+                        //                                 /** PUT IT ON OPTOUT LIST */
+                        //                                 $dataresult['Email'] = "";
 
-                    //                         }else{
-                    //                             $newpersonemail = PersonEmail::create([
-                    //                                 'person_id' => $dataresult['PersonID'],
-                    //                                 'email' => $tmpEmail,
-                    //                                 'email_encrypt' => $tmpMd5,
-                    //                                 'permission' => 'T',
-                    //                                 'zbvalidate' => null,
-                    //                             ]);
-                    //                         }
-                    //                     }
+                        //                                 /** REPORT ANALYTIC */
+                        //                                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'zerobouncefailed');
+                        //                                 /** REPORT ANALYTIC */
+                        //                             }else{
+                        //                                 $newpersonemail = PersonEmail::create([
+                        //                                     'person_id' => $dataresult['PersonID'],
+                        //                                     'email' => $tmpEmail,
+                        //                                     'email_encrypt' => $tmpMd5,
+                        //                                     'permission' => 'T',
+                        //                                     'zbvalidate' => date('Y-m-d H:i:s'),
+                        //                                 ]);
 
-                    //                 }
-                    //             }
+                        //                                 /** REPORT ANALYTIC */
+                        //                                     $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'zerobounce');
+                        //                                 /** REPORT ANALYTIC */
 
-                    //             array_push($matches,$dataresult);
-                    //             return $matches;
-                    //         }
-                    //     }else{
-                    //         /** CHECK FOR LOCATION LOCK */
-                    //         $chkloc = $this->checklocationlock($loctarget,$_zip,$_state,$_city,$loczip,$locstate,$loccity,$nationaltargeting,$failedRecordID);
-                    //             if ($chkloc) {
-                    //                 /** REPORT ANALYTIC */
-                    //                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlockfailed');
-                    //                 /** REPORT ANALYTIC */
-                    //                 return array();
-                    //                 exit;die();
-                    //             }else{
-                    //                 /** REPORT ANALYTIC */
-                    //                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlock');
-                    //                 /** REPORT ANALYTIC */
-                    //             }
-                    //         /** CHECK FOR LOCATION LOCK */
+                        //                             }
 
-                    //         /** GET FROM MD5 TO QUERY AND GET WHATEVER WE CAN GET */
-                    //         $tower = $this->getTowerData("md5",$md5param);
-                    //         if (isset($tower->target_email)) {
-                    //             if ($tower->target_email != "") {
-                    //                 $tmpEmail = strtolower(trim($tower->target_email));
-                    //                 $tmpMd5 = md5($tmpEmail);
-                    //                 $_email = $tmpEmail;
+                        //                         }else{
+                        //                             $newpersonemail = PersonEmail::create([
+                        //                                 'person_id' => $dataresult['PersonID'],
+                        //                                 'email' => $tmpEmail,
+                        //                                 'email_encrypt' => $tmpMd5,
+                        //                                 'permission' => 'T',
+                        //                                 'zbvalidate' => null,
+                        //                             ]);
+                        //                         }
+                        //                     }
 
-                    //                 /** REPORT ANALYTIC */
-                    //                     $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'toweremail');
-                    //                 /** REPORT ANALYTIC */
+                        //                 }
+                        //             }
 
-                    //                 if(trim($tmpEmail) != "") {
+                        //             array_push($matches,$dataresult);
+                        //             return $matches;
+                        //         }
+                        //     }else{
+                        //         /** CHECK FOR LOCATION LOCK */
+                        //         $chkloc = $this->checklocationlock($loctarget,$_zip,$_state,$_city,$loczip,$locstate,$loccity,$nationaltargeting,$failedRecordID);
+                        //             if ($chkloc) {
+                        //                 /** REPORT ANALYTIC */
+                        //                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlockfailed');
+                        //                 /** REPORT ANALYTIC */
+                        //                 return array();
+                        //                 exit;die();
+                        //             }else{
+                        //                 /** REPORT ANALYTIC */
+                        //                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlock');
+                        //                 /** REPORT ANALYTIC */
+                        //             }
+                        //         /** CHECK FOR LOCATION LOCK */
 
-                    //                     $uniqueID = uniqid();
-                    //                     /** INSERT INTO DATABASE PERSON */
-                    //                         $newPerson = Person::create([
-                    //                             'uniqueID' => $uniqueID,
-                    //                             'firstName' => $_fname,
-                    //                             'middleName' => '',
-                    //                             'lastName' => $_lname,
-                    //                             'age' => '0',
-                    //                             'identityScore' => '0',
-                    //                             'lastEntry' => date('Y-m-d H:i:s'),
-                    //                         ]);
+                        //         /** GET FROM MD5 TO QUERY AND GET WHATEVER WE CAN GET */
+                        //         $tower = $this->getTowerData("md5",$md5param);
+                        //         if (isset($tower->target_email)) {
+                        //             if ($tower->target_email != "") {
+                        //                 $tmpEmail = strtolower(trim($tower->target_email));
+                        //                 $tmpMd5 = md5($tmpEmail);
+                        //                 $_email = $tmpEmail;
 
-                    //                         $newPersonID = $newPerson->id;
-                    //                     /** INSERT INTO DATABASE PERSON */
+                        //                 /** REPORT ANALYTIC */
+                        //                     $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'toweremail');
+                        //                 /** REPORT ANALYTIC */
 
-                    //                     $zbcheck = $this->zb_validation($tmpEmail,"");
-                    //                     if (isset($zbcheck->status)) {
-                    //                         if($zbcheck->status == "invalid" || $zbcheck->status == "catch-all" || $zbcheck->status == "abuse" || $zbcheck->status == "do_not_mail" || $zbcheck->status == "spamtrap") {
-                    //                             /** PUT IT ON OPTOUT LIST */
-                    //                             $createoptout = OptoutList::create([
-                    //                                 'email' => $tmpEmail,
-                    //                                 'emailmd5' => md5($tmpEmail),
-                    //                                 'blockedcategory' => 'zbnotvalid',
-                    //                                 'description' => 'Zero Bounce Status. : ' . $zbcheck->status . '|Email1fromTD',
-                    //                             ]);
-                    //                             /** PUT IT ON OPTOUT LIST */
-                    //                             $_email = "";
+                        //                 if(trim($tmpEmail) != "") {
 
-                    //                             /** REPORT ANALYTIC */
-                    //                             $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'zerobouncefailed');
-                    //                             /** REPORT ANALYTIC */
-                    //                         }else{
+                        //                     $uniqueID = uniqid();
+                        //                     /** INSERT INTO DATABASE PERSON */
+                        //                         $newPerson = Person::create([
+                        //                             'uniqueID' => $uniqueID,
+                        //                             'firstName' => $_fname,
+                        //                             'middleName' => '',
+                        //                             'lastName' => $_lname,
+                        //                             'age' => '0',
+                        //                             'identityScore' => '0',
+                        //                             'lastEntry' => date('Y-m-d H:i:s'),
+                        //                         ]);
 
-                    //                             $newpersonemail = PersonEmail::create([
-                    //                                 'person_id' => $newPersonID,
-                    //                                 'email' => $tmpEmail,
-                    //                                 'email_encrypt' => $tmpMd5,
-                    //                                 'permission' => 'T',
-                    //                                 'zbvalidate' => date('Y-m-d H:i:s'),
-                    //                             ]);
+                        //                         $newPersonID = $newPerson->id;
+                        //                     /** INSERT INTO DATABASE PERSON */
 
-                    //                             $_email = $tmpEmail;
+                        //                     $zbcheck = $this->zb_validation($tmpEmail,"");
+                        //                     if (isset($zbcheck->status)) {
+                        //                         if($zbcheck->status == "invalid" || $zbcheck->status == "catch-all" || $zbcheck->status == "abuse" || $zbcheck->status == "do_not_mail" || $zbcheck->status == "spamtrap") {
+                        //                             /** PUT IT ON OPTOUT LIST */
+                        //                             $createoptout = OptoutList::create([
+                        //                                 'email' => $tmpEmail,
+                        //                                 'emailmd5' => md5($tmpEmail),
+                        //                                 'blockedcategory' => 'zbnotvalid',
+                        //                                 'description' => 'Zero Bounce Status. : ' . $zbcheck->status . '|Email1fromTD',
+                        //                             ]);
+                        //                             /** PUT IT ON OPTOUT LIST */
+                        //                             $_email = "";
 
-                    //                             /** REPORT ANALYTIC */
-                    //                                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'zerobounce');
-                    //                             /** REPORT ANALYTIC */
+                        //                             /** REPORT ANALYTIC */
+                        //                             $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'zerobouncefailed');
+                        //                             /** REPORT ANALYTIC */
+                        //                         }else{
 
-                    //                         }
+                        //                             $newpersonemail = PersonEmail::create([
+                        //                                 'person_id' => $newPersonID,
+                        //                                 'email' => $tmpEmail,
+                        //                                 'email_encrypt' => $tmpMd5,
+                        //                                 'permission' => 'T',
+                        //                                 'zbvalidate' => date('Y-m-d H:i:s'),
+                        //                             ]);
 
-                    //                     }else{
-                    //                         $newpersonemail = PersonEmail::create([
-                    //                             'person_id' => $newPersonID,
-                    //                             'email' => $tmpEmail,
-                    //                             'email_encrypt' => $tmpMd5,
-                    //                             'permission' => 'T',
-                    //                             'zbvalidate' => null,
-                    //                         ]);
+                        //                             $_email = $tmpEmail;
 
-                    //                         $_email = $tmpEmail;
+                        //                             /** REPORT ANALYTIC */
+                        //                                 $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'zerobounce');
+                        //                             /** REPORT ANALYTIC */
 
-                    //                     }
+                        //                         }
 
-                    //                     /** INSERT INTO PERSON_ADDRESSES */
-                    //                     $newpersonaddress = PersonAddress::create([
-                    //                         'person_id' => $newPersonID,
-                    //                         'street' => $_address,
-                    //                         'unit' => '',
-                    //                         'city' => $_city,
-                    //                         'state' => $_state,
-                    //                         'zip' => $_zip,
-                    //                         'fullAddress' => $_address . ' ' . $_city . ',' . $_state . ' ' . $_zip,
-                    //                         'firstReportedDate' => date('Y-m-d'),
-                    //                         'lastReportedDate' => date('Y-m-d'),
-                    //                     ]);
-                    //                     /** INSERT INTO PERSON_ADDRESSES */
+                        //                     }else{
+                        //                         $newpersonemail = PersonEmail::create([
+                        //                             'person_id' => $newPersonID,
+                        //                             'email' => $tmpEmail,
+                        //                             'email_encrypt' => $tmpMd5,
+                        //                             'permission' => 'T',
+                        //                             'zbvalidate' => null,
+                        //                         ]);
 
-                    //                 }
+                        //                         $_email = $tmpEmail;
 
-                    //             }
-                    //         }
+                        //                     }
 
-                    //         if (trim($_email) != "") {
-                    //             $_ID = $this->generateReportUniqueNumber();
+                        //                     /** INSERT INTO PERSON_ADDRESSES */
+                        //                     $newpersonaddress = PersonAddress::create([
+                        //                         'person_id' => $newPersonID,
+                        //                         'street' => $_address,
+                        //                         'unit' => '',
+                        //                         'city' => $_city,
+                        //                         'state' => $_state,
+                        //                         'zip' => $_zip,
+                        //                         'fullAddress' => $_address . ' ' . $_city . ',' . $_state . ' ' . $_zip,
+                        //                         'firstReportedDate' => date('Y-m-d'),
+                        //                         'lastReportedDate' => date('Y-m-d'),
+                        //                     ]);
+                        //                     /** INSERT INTO PERSON_ADDRESSES */
 
-                    //             $new = array(
-                    //                 "ID" => $_ID,
-                    //                 "Email" => $_email,
-                    //                 "Email2" => '',
-                    //                 "OriginalMD5" => $md5param,
-                    //                 "IP" => '',
-                    //                 "Source" => "",
-                    //                 "OptInDate" => date('Y-m-d H:i:s'),
-                    //                 "ClickDate" => date('Y-m-d H:i:s'),
-                    //                 "Referer" => "",
-                    //                 "Phone" => $_phone,
-                    //                 "Phone2" => '',
-                    //                 "FirstName" => $_fname,
-                    //                 "LastName" => $_lname,
-                    //                 "Address1" => $_address,
-                    //                 "Address2" => '',
-                    //                 "City" => $_city,
-                    //                 "State" => $_state,
-                    //                 "Zipcode" => $_zip,
-                    //                 "PersonID" => $newPersonID,
-                    //                 "Keyword" => $keyword,
-                    //                 "Description" => 'TowerDataPostal|NotGetDataEndato',
-                    //             );
+                        //                 }
 
-                    //             array_push($matches,$new);
-                    //             return $matches;
-                    //         }else{
-                    //             return array();
-                    //         }
-                    //         /** GET FROM MD5 TO QUERY AND GET WHATEVER WE CAN GET */
+                        //             }
+                        //         }
 
-                    //     }
-                    // }else{
-                    //     /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                    //         $frupdate = FailedRecord::find($failedRecordID);
-                    //         $frupdate->description = $frupdate->description . '|NoDataReturnFromPostalTowerData';
-                    //         $frupdate->save();
-                    //     /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                    //     /** RECORD AS FAILURE */
-                    //     /*$fr = FailedRecord::create([
-                    //         'email_encrypt' => $md5param,
-                    //         'leadspeek_api_id' => $leadspeek_api_id,
-                    //         'description' => 'No Data Return from Postal Tower Data',
-                    //     ]);*/
-                    //     return array();
-                    //     /** RECORD AS FAILURE */
-                    // }
-                /** QUERYING TO TOWER DATA WITH DATA POSTAL TO GET SOME OTHER INFORMATION WITH MD5 EMAIL */
+                        //         if (trim($_email) != "") {
+                        //             $_ID = $this->generateReportUniqueNumber();
+
+                        //             $new = array(
+                        //                 "ID" => $_ID,
+                        //                 "Email" => $_email,
+                        //                 "Email2" => '',
+                        //                 "OriginalMD5" => $md5param,
+                        //                 "IP" => '',
+                        //                 "Source" => "",
+                        //                 "OptInDate" => date('Y-m-d H:i:s'),
+                        //                 "ClickDate" => date('Y-m-d H:i:s'),
+                        //                 "Referer" => "",
+                        //                 "Phone" => $_phone,
+                        //                 "Phone2" => '',
+                        //                 "FirstName" => $_fname,
+                        //                 "LastName" => $_lname,
+                        //                 "Address1" => $_address,
+                        //                 "Address2" => '',
+                        //                 "City" => $_city,
+                        //                 "State" => $_state,
+                        //                 "Zipcode" => $_zip,
+                        //                 "PersonID" => $newPersonID,
+                        //                 "Keyword" => $keyword,
+                        //                 "Description" => 'TowerDataPostal|NotGetDataEndato',
+                        //             );
+
+                        //             array_push($matches,$new);
+                        //             return $matches;
+                        //         }else{
+                        //             return array();
+                        //         }
+                        //         /** GET FROM MD5 TO QUERY AND GET WHATEVER WE CAN GET */
+
+                        //     }
+                        // }else{
+                        //     /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+                        //         $frupdate = FailedRecord::find($failedRecordID);
+                        //         $frupdate->description = $frupdate->description . '|NoDataReturnFromPostalTowerData';
+                        //         $frupdate->save();
+                        //     /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+                        //     /** RECORD AS FAILURE */
+                        //     /*$fr = FailedRecord::create([
+                        //         'email_encrypt' => $md5param,
+                        //         'leadspeek_api_id' => $leadspeek_api_id,
+                        //         'description' => 'No Data Return from Postal Tower Data',
+                        //     ]);*/
+                        //     return array();
+                        //     /** RECORD AS FAILURE */
+                        // }
+                    /** QUERYING TO TOWER DATA WITH DATA POSTAL TO GET SOME OTHER INFORMATION WITH MD5 EMAIL */
+                }
+
+
+
+            }else{
+                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+                    $frupdate = FailedRecord::find($failedRecordID);
+                    $frupdate->description = $frupdate->description . '|MatchReidentification:' . $reidentification;
+                    $frupdate->save();
+                /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+
+                /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+                Log::info("RELEASE GETDATAMATCH LOCK");
+                $this->releaseLock($initLock);
+                /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+
+                /* WRITE UPSER FAILED LEAD RECORD */
+                $this->UpsertFailedLeadRecord([
+                    'function' => 'getDataMatch',
+                    'type' => 'blocked',
+                    'description' => "blocked in reidentification type = $reidentification function getDataMatch",
+                    'leadspeek_api_id' => $leadspeek_api_id,
+                    'email_encrypt' => $md5param,
+                    'leadspeek_type' => $leadspeektype,
+                    // 'lead_not_serve_type' => 'reidentification_failed' //prepare new schem
+                ]);
+                /* WRITE UPSER FAILED LEAD RECORD */
+
+                return array();
             }
+            /** CHECK ON DATABASE IF EXIST */
+        } catch (\Exception $e) {
+            Log::info(['error' => $e->getMessage()]);
 
-
-
-        }else{
-            /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
-                $frupdate = FailedRecord::find($failedRecordID);
-                $frupdate->description = $frupdate->description . '|MatchReidentification:' . $reidentification;
-                $frupdate->save();
-            /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+            /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
+            Log::info("RELEASE GETDATAMATCH LOCK");
+            $this->releaseLock($initLock);
+            /* RELEASE LOCK PROCESS FOR GETDATAMATCH */
 
             return array();
         }
-        /** CHECK ON DATABASE IF EXIST */
     }
 
     private function checklocationlock($loctarget = "Focus",$_zip = "",$_state = "",$_city = "",$loczip = "",$locstate = "",$locstatesifi = "",$loccity = "",$loccitysifi = "",$nationaltargeting,$failedRecordID) {
@@ -5126,6 +5468,7 @@ class WebhookController extends Controller
                                 $frupdate->description = $frupdate->description . '|NoDataReturnFromBigBDMPII';
                                 $frupdate->save();
                             /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+
                             $new = array();
                         }
                     /** CHECK WITH BIG BDM PII */
@@ -5138,6 +5481,7 @@ class WebhookController extends Controller
                         $frupdate->description = $frupdate->description . '|NoDataReturnFromPostalTowerData';
                         $frupdate->save();
                     /** UPDATE FOR DESCRIPTION ON FAILED RECORD */
+
                     $new = array();
                     /** RECORD AS FAILURE */
                 }
@@ -5152,6 +5496,18 @@ class WebhookController extends Controller
                     /** REPORT ANALYTIC */
                     $this->UpsertReportAnalytics($leadspeek_api_id,$leadspeektype,'locationlockfailed');
                     /** REPORT ANALYTIC */
+
+                    /* WRITE UPSER FAILED LEAD RECORD */
+                    $this->UpsertFailedLeadRecord([
+                        'function' => 'process_BDM_TowerDATA',
+                        'type' => 'blocked',
+                        'description' => "blocked in checklocationlock zip = $loczip, state = $locstate, city = $loccity function process_BDM_TowerDATA",
+                        'leadspeek_api_id' => $leadspeek_api_id,
+                        'email_encrypt' => $md5param,
+                        'leadspeek_type' => $leadspeektype,
+                    ]);
+                    /* WRITE UPSER FAILED LEAD RECORD */
+                    
                     $new = array();
                 }else{
                     $trackBigBDM = $trackBigBDM . "->LocationLockSuccess";
@@ -5170,6 +5526,89 @@ class WebhookController extends Controller
 
         return $new;
 
+    }
+
+    public function filterEmailInLeadspeekReport($leadspeek_api_id = '', $email = '', $personID = '', $clientCompanyID = '', $leadspeektype = '') {
+        /** CHECK REGARDING RE-IDENTIFICATION FOR LEADS */
+        $salt = substr(hash('sha256', env('APP_KEY')), 0, 16);
+        $reidentification = 'never';
+        $notOnReidentification = true;
+        $applyreidentificationall = false;
+
+        $chkreidentification = LeadspeekUser::select('reidentification_type','applyreidentificationall')
+                                    ->where('leadspeek_api_id','=',$leadspeek_api_id)
+                                    ->get();
+
+        if (count($chkreidentification) > 0) {
+            $reidentification = $chkreidentification[0]['reidentification_type'];
+            $applyreidentificationall = ($chkreidentification[0]['applyreidentificationall'] == 'T')?true:false;
+        }
+
+        /** CHECK IF DATA ALREADY IN THAT CAMPAIGN OR NOT */
+        $chkExistOnCampaign = array();
+
+        if ($applyreidentificationall) {
+            $chkExistOnCampaign = LeadspeekReport::select('leadspeek_reports.id','leadspeek_reports.clickdate','leadspeek_reports.created_at')
+                                    ->join('leadspeek_users','leadspeek_reports.lp_user_id','=','leadspeek_users.id')
+                                    ->where('leadspeek_reports.company_id','=',$clientCompanyID)
+                                    ->where('leadspeek_users.applyreidentificationall','=','T')
+                                    ->where('leadspeek_users.archived','=','F')
+                                    ->where(DB::raw("CONVERT(AES_DECRYPT(FROM_bASE64(`leadspeek_reports`.`email`), '" . $salt . "') USING utf8mb4)"),'=',$email)
+                                    ->orderBy(DB::raw("DATE_FORMAT(leadspeek_reports.clickdate,'%Y%m%d')"),'DESC')
+                                    ->limit(1)
+                                    ->get();
+        }else{
+            $chkExistOnCampaign = LeadspeekReport::select('id','clickdate','created_at')
+                                    ->where('leadspeek_api_id','=',$leadspeek_api_id)
+                                    ->where(DB::raw("CONVERT(AES_DECRYPT(FROM_bASE64(`email`), '" . $salt . "') USING utf8mb4)"),'=',$email)
+                                    ->orderBy(DB::raw("DATE_FORMAT(clickdate,'%Y%m%d')"),'DESC')
+                                    ->limit(1)
+                                    ->get();
+        }
+
+        //if (count($chkExistOnCampaign) > 0 && $reidentification != 'never') {
+        if (count($chkExistOnCampaign) > 0) {
+            $clickDate = date('Ymd',strtotime($chkExistOnCampaign[0]['clickdate']));
+            $date1=date_create(date('Ymd'));
+            $date2=date_create($clickDate);
+            $diff=date_diff($date1,$date2);
+
+            if ($reidentification == 'never') {
+                $notOnReidentification = false;
+            }else if ($diff->format("%a") <= 7 && $reidentification == '1 week') {
+                $notOnReidentification = false;
+            }else if ($diff->format("%a") <= 30 && $reidentification == '1 month') {
+                $notOnReidentification = false;
+            }else if ($diff->format("%a") <= 90 && $reidentification == '3 months') {
+                $notOnReidentification = false;
+            }else if ($diff->format("%a") <= 120 && $reidentification == '6 months') {
+                $notOnReidentification = false;
+            }else if ($diff->format("%a") <= 360 && $reidentification == '1 year') {
+                $notOnReidentification = false;
+            }
+        }
+
+        if(!$notOnReidentification) {
+            /* WRITE UPSER FAILED LEAD RECORD */
+            $this->UpsertFailedLeadRecord([
+                'function' => 'filterEmailInLeadspeekReport',
+                'type' => 'blocked',
+                'description' => "blocked in reidentification type = $reidentification function filterEmailInLeadspeekReport",
+                'leadspeek_api_id' => $leadspeek_api_id,
+                'email_encrypt' => $email,
+                'leadspeek_type' => $leadspeektype,
+            ]);
+            /* WRITE UPSER FAILED LEAD RECORD */
+
+            /* DELETE PERSON, PERSON EMAIL, PERSON PHONE, PERSON ADDRESS */
+            // $person = Person::where('id',$personID)->delete();
+            // $personEmail = PersonEmail::where('person_id',$personID)->delete();
+            // $personPhone = PersonPhone::where('person_id',$personID)->delete();
+            // $personAddress = PersonAddress::where('person_id',$personID)->delete();
+            // /* DELETE PERSON, PERSON EMAIL, PERSON PHONE, PERSON ADDRESS */
+        }
+
+        return $notOnReidentification;
     }
 
     private function dataNotExistOnDBBIG($_fname,$_lname,$_email,$_phone,$_address,$_city,$_state,$_zip,$personID = "",$keyword = "",$dataflow = "",$failedRecordID = "",$md5param = "",$leadspeek_api_id = "",$leadspeektype = "") {
