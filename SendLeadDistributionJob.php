@@ -30,6 +30,7 @@ class SendLeadDistributionJob implements ShouldQueue, ShouldBeUnique
     protected $schedule_id;
     protected $last_interval;
     protected $index;
+    protected $keyword;
     /* NEW METHOD */
 
     /* OLD METHOD */
@@ -47,7 +48,7 @@ class SendLeadDistributionJob implements ShouldQueue, ShouldBeUnique
      * @return void
      */
     /* NEW METHOD */
-    public function __construct($leads, $leadspeek_api_id, $schedule_id, $last_interval, $index)
+    public function __construct($leads, $leadspeek_api_id, $schedule_id, $last_interval, $index, $keyword)
     {
         $this->onQueue('send_lead');
         $this->leads = $leads;
@@ -55,6 +56,7 @@ class SendLeadDistributionJob implements ShouldQueue, ShouldBeUnique
         $this->schedule_id = $schedule_id;
         $this->last_interval = $last_interval;
         $this->index = $index;
+        $this->keyword = $keyword;
     }
     /* NEW METHOD */
 
@@ -92,10 +94,6 @@ class SendLeadDistributionJob implements ShouldQueue, ShouldBeUnique
         {
             Log::channel('custom')->info("==oneleads==");
             Log::channel('custom')->info('', ['leadspeek_api_id' => $lead['leadspeek_api_id']]);
-            $data = new Request([
-                'label' => $lead['leadspeek_api_id'].'|'.$lead['keyword'],
-                'md5_email' => $lead['md5']
-            ]);
 
             // $this->webhookController->getleadwebhook($data);
 
@@ -106,7 +104,13 @@ class SendLeadDistributionJob implements ShouldQueue, ShouldBeUnique
             /* CHECK BIGBDM DOUBLE ATAU TIDAK DENGAN CARA CEK ID NYA ADA TIDAK DI DATABASE */
 
             if($double_id_bigdbm_lead) {
+                $data = new Request([
+                    'label' => $lead['leadspeek_api_id'].'|'.$lead['keyword'],
+                    'md5_email' => $lead['md5']
+                ]);
+
                 $this->webhookController->getleadwebhook($data);
+
                 BigDBMLeads::where('id', $lead['id'])->delete();
             }
             
@@ -114,6 +118,41 @@ class SendLeadDistributionJob implements ShouldQueue, ShouldBeUnique
             Log::channel('custom')->info("==oneleads==");
         }
         /* SEND LEADS AFTER CHUNK / 10 LEADS */
+
+        $schedule = DistributionSchedule::where('id', $this->schedule_id)->first();
+    
+        if ($schedule->last_interval >= $schedule->end_interval) 
+        {
+            $campaign = LeadspeekUser::select('id','company_id', 'leadspeek_api_id', 'lp_limit_leads', 'leadspeek_locator_keyword','active','disabled','active_user')
+                                    ->where('leadspeek_type', 'enhance')
+                                    ->where('leadspeek_api_id', $this->leadspeek_api_id)
+                                    ->first();
+    
+            $leads_report = LeadspeekReport::where('leadspeek_api_id', $campaign->leadspeek_api_id)
+                                        ->where('created_at','>=', Carbon::today())
+                                        ->count();
+            $leads_database = BigDBMLeads::select('id','leadspeek_api_id','list_queue_id','keyword','md5')
+                                        ->where('leadspeek_api_id', $campaign->leadspeek_api_id)
+                                        //->where('list_queue_id',$schedule->list_queue_id)
+                                        ->where(function($query) {
+                                            foreach ($this->keyword as $word) {
+                                                $query->orWhereRaw('? LIKE CONCAT("%", `keyword`, "%")', [trim($word)]);
+                                            }
+                                        })
+                                        ->count();
+    
+            // Log::channel('custom')->info("cek jumlah existing leads_redistribution", [
+            //     'leads_report' => $leads_report,
+            //     'lp_limit_leads' => $campaign->lp_limit_leads,
+            //     'leads_database' => $leads_database,
+            // ]);
+                
+            if($leads_report >= $campaign->lp_limit_leads || $leads_database == 0) {
+                $schedule->status = 'done';
+                $schedule->save();
+                Log::channel('custom')->info("ALREADY FULL FILL LEAD PER DAY OR THE BIGDBM LEADS ZERO LEFT");
+            }
+        }
         
         Log::channel('custom')->info('=============end_sendlead=============');
     }

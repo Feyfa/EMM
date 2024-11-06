@@ -155,24 +155,17 @@ class LeadsDistributionJobs implements ShouldQueue, ShouldBeUnique
                                     $query->orWhereRaw('? LIKE CONCAT("%", `keyword`, "%")', [trim($word)]);
                                 }
                             })
-                            ->where('status','pending')
+                            // ->where('status','pending')
                             ->orderBy('id', 'desc')
                             ->limit($limit)
-                            ->get();
+                            ->get()
+                            ->toArray();
 
         Log::info("RUN leads_distribution leadspeekID : " . $leadspeek_api_id . " | List Queue ID : " . $list_queue_id);
         Log::info($keyword);
         Log::info(['leadspeek-api_id' => $leadspeek_api_id]);
 
         if(count($leads) > 0) {
-            
-            foreach($leads as $lead) {
-                $lead->status = 'proceed';
-                $lead->save();
-            }
-
-            $leads = $leads->toArray();
-
             // pakai metode chunk jika lebih dari 10
             if($limit > 10) {
                 Log::info(['=============CARA CHUNK=============']);
@@ -182,48 +175,55 @@ class LeadsDistributionJobs implements ShouldQueue, ShouldBeUnique
                 $leads_chunk = array_chunk($leads, 10);
     
                 foreach($leads_chunk as $index => $lead) {
-                    $jobs[] = new SendLeadDistributionJob($lead, $this->leadspeek_api_id, $this->id, $this->last_interval, $index);
+                    // $jobs[] = new SendLeadDistributionJob($lead, $this->leadspeek_api_id, $this->id, $this->last_interval, $index);
+                    SendLeadDistributionJob::dispatch(
+                        $lead, 
+                        $leadspeek_api_id, 
+                        $this->id, 
+                        $this->last_interval, 
+                        $index,
+                        $keyword,
+                    );
                 }
     
-                $jobs[] = new FinalizeSendLeadDistributionJob($this->id, $leadspeek_api_id, $keyword, $this->last_interval);
+                // $jobs[] = new FinalizeSendLeadDistributionJob($this->id, $leadspeek_api_id, $keyword, $this->last_interval);
     
                 Log::info(['count_jobs' => count($jobs), 'limit' => $limit]);
-
-                Bus::chain($jobs)->dispatch();
                 Log::info(['=============CARA CHUNK=============']);
             } 
             // jika leadsnya <= 10, maka pakai cara biasa jangan pakai chunk
             else {
                 Log::info(['=============CARA LANGSUNG=============']);
-                $leads = BigDBMLeads::select('id','leadspeek_api_id','list_queue_id','keyword','md5')
-                                    ->where('leadspeek_api_id', $leadspeek_api_id)
-                                    //->where('list_queue_id', $list_queue_id)
-                                    //->whereIn('keyword', $keyword)
-                                    ->where(function($query) use ($keyword) {
-                                        foreach ($keyword as $word) {
-                                            $query->orWhereRaw('? LIKE CONCAT("%", `keyword`, "%")', [trim($word)]);
-                                        }
-                                    })
-                                    ->orderBy('id', 'desc')
-                                    ->limit($limit)
-                                    ->get();
+                // $leads = BigDBMLeads::select('id','leadspeek_api_id','list_queue_id','keyword','md5')
+                //                     ->where('leadspeek_api_id', $leadspeek_api_id)
+                //                     //->where('list_queue_id', $list_queue_id)
+                //                     //->whereIn('keyword', $keyword)
+                //                     ->where(function($query) use ($keyword) {
+                //                         foreach ($keyword as $word) {
+                //                             $query->orWhereRaw('? LIKE CONCAT("%", `keyword`, "%")', [trim($word)]);
+                //                         }
+                //                     })
+                //                     ->orderBy('id', 'desc')
+                //                     ->limit($limit)
+                //                     ->get();
 
                 foreach($leads as $lead)
                 {
-                    $data = new Request([
-                        'label' => $lead['leadspeek_api_id'].'|'.$lead['keyword'],
-                        'md5_email' => $lead['md5']
-                    ]);
-
-                    $this->webhookController->getleadwebhook($data);
-
                     /* CHECK BIGBDM DOUBLE ATAU TIDAK DENGAN CARA CEK ID NYA ADA TIDAK DI DATABASE */
                     $double_id_bigdbm_lead = BigDBMLeads::where('id', $lead['id'])->exists();
                     Log::channel('custom')->info('', ['id' => $lead['id'], 'result' => ($double_id_bigdbm_lead ? "EXISTS" : 'NOTHING') ]);
-                    // Log::channel('double')->info('', ['id' => $lead['id'], 'result' => ($double_id_bigdbm_lead ? "EXISTS" : 'NOTHING') ]);
                     /* CHECK BIGBDM DOUBLE ATAU TIDAK DENGAN CARA CEK ID NYA ADA TIDAK DI DATABASE */
-            
-                    BigDBMLeads::where('id', $lead['id'])->delete();
+
+                    if($double_id_bigdbm_lead) {
+                        $data = new Request([
+                            'label' => $lead['leadspeek_api_id'].'|'.$lead['keyword'],
+                            'md5_email' => $lead['md5']
+                        ]);
+    
+                        $this->webhookController->getleadwebhook($data);
+
+                        BigDBMLeads::where('id', $lead['id'])->delete();
+                    }
                 }
                 Log::info(['=============CARA LANGSUNG=============']);
             }
